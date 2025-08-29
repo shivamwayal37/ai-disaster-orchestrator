@@ -1,0 +1,47 @@
+version: '3.8'
+services:
+  backend:
+    build: ./packages/backend
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    volumes:
+      - ./packages/backend/src:/app/src
+    depends_on:
+      - redis
+    environment:
+      - NODE_ENV=development
+
+  # workers typically run separate; include for local dev if you want
+  ingest_worker:
+    build: ./packages/workers
+    command: ["python", "ingest_worker.py"]
+    env_file:
+      - .env
+    volumes:
+      - ./packages/workers:/app
+    depends_on:
+      - backend
+
+  embedding_worker:
+    build: ./packages/workers
+    command: ["python", "embedding_worker.py"]
+    env_file:
+      - .env
+    volumes:
+      - ./packages/workers:/app
+    depends_on:
+      - backend
+
+  # Optional Redis for caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:

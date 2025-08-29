@@ -1,0 +1,22 @@
+{
+  "name": "ai-disaster-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/frontend",
+    "packages/backend",
+    "packages/workers"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm:dev:*\"",
+    "dev:frontend": "npm --workspace packages/frontend run dev",
+    "dev:backend": "npm --workspace packages/backend run dev",
+    "dev:workers": "echo 'run workers separately'",
+    "lint": "eslint --ext .js,.ts . || true",
+    "test": "echo 'no tests yet'"
+  },
+  "devDependencies": {
+    "concurrently": "^8.0.0",
+    "eslint": "^8.0.0"
+  }
+}

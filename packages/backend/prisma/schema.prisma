@@ -1,0 +1,171 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["fullTextIndex"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// Incoming disaster alerts from various sources
+model Alert {
+  id          BigInt   @id @default(autoincrement())
+  source      String   @db.VarChar(100) // weather, twitter, nasa, manual
+  alertType   String   @map("alert_type") @db.VarChar(100) // flood, earthquake, wildfire, hurricane
+  title       String   @db.VarChar(255)
+  description String   @db.Text
+  severity    Int      @db.TinyInt // 1-5 scale
+  location    String?  @db.VarChar(255)
+  latitude    Float?   @db.Double
+  longitude   Float?   @db.Double
+  startTime   DateTime @map("start_time")
+  endTime     DateTime? @map("end_time")
+  isActive    Boolean  @default(true) @map("is_active")
+  rawData     Json?    @map("raw_data") // Original API response
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  documents Document[]
+  
+  @@index([alertType])
+  @@index([severity])
+  @@index([latitude, longitude])
+  @@index([isActive, createdAt])
+  @@map("alerts")
+}
+
+// Documents with AI summaries and vector embeddings
+model Document {
+  id          BigInt   @id @default(autoincrement())
+  title       String   @db.VarChar(255)
+  content     String   @db.Text
+  summary     String?  @db.Text // AI-generated summary
+  location    String?  @db.VarChar(255)
+  category    String   @db.VarChar(100) // protocol, report, news, social_media
+  sourceUrl   String?  @map("source_url") @db.VarChar(500)
+  mediaUrl    String?  @map("media_url") @db.VarChar(500)
+  language    String   @default("en") @db.VarChar(10)
+  
+  // Vector embeddings for semantic search
+  embedding   Bytes?   @db.LongBlob // Will be VECTOR(1536) in TiDB
+  imageEmbedding Bytes? @map("image_embedding") @db.LongBlob // VECTOR(512) for images
+  
+  // Metadata
+  wordCount   Int?     @map("word_count")
+  readingTime Int?     @map("reading_time") // minutes
+  confidence  Float?   @db.Float // AI confidence score
+  
+  // Timestamps
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  alertId     BigInt?  @map("alert_id")
+  alert       Alert?   @relation(fields: [alertId], references: [id])
+  
+  @@fulltext([content])
+  @@fulltext([title])
+  @@index([category])
+  @@index([publishedAt])
+  @@index([confidence])
+  @@map("documents")
+}
+
+// Relief resources (shelters, hospitals, NGOs, etc.)
+model Resource {
+  id          BigInt   @id @default(autoincrement())
+  name        String   @db.VarChar(255)
+  type        String   @db.VarChar(100) // shelter, hospital, ngo, fire_station, police
+  description String?  @db.Text
+  address     String   @db.VarChar(500)
+  city        String   @db.VarChar(100)
+  state       String   @db.VarChar(100)
+  country     String   @default("US") @db.VarChar(50)
+  postalCode  String?  @map("postal_code") @db.VarChar(20)
+  
+  // Geographic coordinates
+  latitude    Float    @db.Double
+  longitude   Float    @db.Double
+  
+  // Contact information
+  phone       String?  @db.VarChar(50)
+  email       String?  @db.VarChar(255)
+  website     String?  @db.VarChar(500)
+  
+  // Capacity and availability
+  capacity    Int?     // max people/beds
+  currentLoad Int?     @map("current_load") // current occupancy
+  isActive    Boolean  @default(true) @map("is_active")
+  isEmergency Boolean  @default(false) @map("is_emergency") // 24/7 emergency services
+  
+  // Operating hours (JSON format)
+  operatingHours Json? @map("operating_hours")
+  
+  // Services offered (JSON array)
+  services    Json?    // ["medical", "food", "shelter", "supplies"]
+  
+  // Disaster-specific info
+  disasterTypes Json?  @map("disaster_types") // ["flood", "earthquake", "fire"]
+  lastUpdated   DateTime @map("last_updated") @default(now())
+  
+  // Vector embedding for semantic matching
+  embedding   Bytes?   @db.LongBlob // VECTOR(1536)
+  
+  // Timestamps
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  @@index([type])
+  @@index([latitude, longitude])
+  @@index([isActive, isEmergency])
+  @@index([city, state])
+  @@fulltext([name])
+  @@fulltext([description])
+  @@fulltext([address])
+  @@map("resources")
+}
+
+// Action audit trail (from original schema)
+model ActionAudit {
+  id        BigInt   @id @default(autoincrement())
+  alertId   BigInt?  @map("alert_id")
+  action    String   @db.VarChar(100) // ROUTE_GENERATED, SMS_SENT, PLAN_CREATED
+  payload   Json?
+  status    String   @db.VarChar(50) // SUCCESS, ERROR, PENDING
+  errorMsg  String?  @map("error_msg") @db.Text
+  duration  Int?     // milliseconds
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  @@index([alertId])
+  @@index([action, status])
+  @@index([createdAt])
+  @@map("action_audit")
+}
+
+// Work queue for background tasks
+model WorkQueue {
+  id         BigInt   @id @default(autoincrement())
+  taskType   String   @map("task_type") @db.VarChar(50) // INGEST, EMBED, PLAN, ROUTE, NOTIFY
+  payload    Json
+  status     String   @default("PENDING") @db.VarChar(20) // PENDING, RUNNING, DONE, ERROR
+  retryCount Int      @default(0) @map("retry_count")
+  maxRetries Int      @default(3) @map("max_retries")
+  priority   Int      @default(5) // 1=highest, 10=lowest
+  scheduledAt DateTime? @map("scheduled_at") // for delayed tasks
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  errorMsg    String?   @map("error_msg") @db.Text
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  
+  @@index([status, priority])
+  @@index([taskType, status])
+  @@index([scheduledAt])
+  @@map("work_queue")
+}
