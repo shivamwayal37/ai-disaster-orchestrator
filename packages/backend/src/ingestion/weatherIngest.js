@@ -158,6 +158,79 @@ async function runWeatherIngestion() {
   }
 }
 
+/**
+ * Quick ingestion with a single test alert
+ */
+async function runQuickWeatherIngestion() {
+  const startTime = Date.now();
+  const stats = {
+    fetched: 0,
+    normalized: 0,
+    processed_by_kimi: 0,
+    inserted: 0,
+    errors: 0
+  };
+
+  try {
+    logger.info('Starting quick weather ingestion (test mode)');
+    
+    // Create a single test alert with all required fields
+    const testAlert = {
+      id: 'TEST-ALERT-001',
+      event: 'Test Weather Alert',
+      headline: 'Test Weather Condition',
+      description: 'This is a test weather alert for CI/CD pipeline verification.',
+      severity: 'moderate',  // Must be lowercase
+      urgency: 'expected',   // Must be lowercase
+      certainty: 'likely',   // Required field
+      areas: ['Test Area'],
+      coordinates: { lat: 0, lng: 0 },
+      effective: new Date().toISOString(),
+      expires: new Date(Date.now() + 3600000).toISOString(),
+      senderName: 'Test System',
+      web: 'https://example.com/test',
+      // Add any other required fields that might be needed
+      status: 'actual',
+      category: 'met',
+      responseType: 'prepare',
+      parameters: {}
+    };
+
+    stats.fetched = 1;
+    
+    // Normalize the test alert
+    const normalized = normalizeWeatherData(testAlert);
+    stats.normalized = 1;
+
+    // Process with Kimi
+    const [summary, entities] = await Promise.all([
+      summarizeAlert(normalized),
+      extractEntities(normalized)
+    ]);
+    
+    stats.processed_by_kimi = 1;
+    
+    // Insert into database
+    await insertAlert({
+      ...normalized,
+      summary: summary.summary,
+      entities: JSON.stringify(entities.entities)
+    });
+    
+    stats.inserted = 1;
+    
+    logger.info({ stats }, 'Quick weather ingestion completed');
+    return { success: true, stats };
+    
+  } catch (error) {
+    logger.error({ error: error.message }, 'Quick weather ingestion failed');
+    stats.errors = 1;
+    return { success: false, stats, error: error.message };
+  } finally {
+    await logIngestionRun('weather', stats.errors === 0 ? 'success' : 'error', stats);
+  }
+}
+
 // Allow running as standalone script
 if (require.main === module) {
   runWeatherIngestion()
@@ -167,5 +240,6 @@ if (require.main === module) {
 
 module.exports = {
   ingestWeatherAlerts,
-  runWeatherIngestion
+  runWeatherIngestion,
+  runQuickWeatherIngestion
 };

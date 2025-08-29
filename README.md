@@ -48,41 +48,53 @@ ai-disaster-orchestrator/
 - Python 3.11+
 - Docker & Docker Compose
 - TiDB Cloud account
+- Kimi API key (from [Moonshot AI](https://platform.moonshot.cn/console/api-keys))
 
 ### Setup
 
 1. **Clone and install dependencies**:
-```bash
-git clone <your-repo>
-cd ai-disaster-orchestrator
-npm install
-```
 
-2. **Configure environment**:
-```bash
-cp .env.example .env
-# Fill in your TiDB, OpenAI, Google Maps, and Twilio credentials
-```
+3. Install dependencies:
+   ```bash
+   npm install
+   cd packages/backend && npm install
+   cd ../../
+   ```
 
-3. **Set up TiDB database**:
+4. **Set up TiDB database**:
 ```bash
 # Run the SQL schema in your TiDB Cloud instance
 mysql -h <tidb-host> -u <user> -p < sql/create_tables.sql
 ```
 
-4. **Start development servers**:
-```bash
-# Option 1: Use npm workspaces
-npm run dev
+5. **Apply the Kimi embedding dimension update**:
+   ```bash
+   mysql -h your-tidb-host -u your-username -p < sql/migrations/20240829_update_embedding_dimensions.sql
+   ```
 
-# Option 2: Use Docker Compose
-docker-compose up
+### Running the Application
 
-# Option 3: Start individually
-npm --workspace packages/frontend run dev    # Port 3000
-npm --workspace packages/backend run dev     # Port 4000
-cd packages/workers && python ingest_worker.py
-```
+1. Start the database and services:
+   ```bash
+   docker-compose up -d
+   ```
+
+2. Run database migrations:
+   ```bash
+   cd packages/backend
+   npx prisma migrate deploy
+   ```
+
+3. Start the backend server:
+   ```bash
+   npm run dev
+   ```
+
+4. In a separate terminal, start the embedding worker:
+   ```bash
+   cd packages/backend
+   node src/workers/embeddingWorker.js
+   ```
 
 ### Environment Variables
 
@@ -111,7 +123,7 @@ Copy `.env.example` to `.env` and configure:
 - `POST /api/incidents/:id/route` - Generate evacuation routes
 - `POST /api/incidents/:id/notify` - Send SMS notifications
 
-## Day 1 — Completed ✅
+## Day 1 — Completed 
 
 - [x] Created TiDB Cloud account and noted DB connection info
 - [x] Initialized monorepo with npm workspaces
@@ -122,7 +134,7 @@ Copy `.env.example` to `.env` and configure:
 - [x] Added CI skeleton with GitHub Actions
 - [x] Created comprehensive README
 
-## Day 2 — Completed ✅
+## Day 2 — Completed 
 
 - [x] **Enhanced Database Schema**: Complete TiDB schema with vector + full-text support
 - [x] **Prisma Integration**: Type-safe database client with migrations

@@ -165,7 +165,74 @@ if (require.main === module) {
     .catch(() => process.exit(1));
 }
 
+/**
+ * Quick ingestion with a single test Twitter alert
+ */
+async function runQuickTwitterIngestion() {
+  const startTime = Date.now();
+  const stats = {
+    fetched: 0,
+    normalized: 0,
+    processed_by_kimi: 0,
+    inserted: 0,
+    errors: 0
+  };
+
+  try {
+    logger.info('Starting quick Twitter ingestion (test mode)');
+    
+    // Create a single test alert
+    const testAlert = {
+      id: 'TEST-TWITTER-001',
+      text: 'Test tweet about a disaster situation',
+      user: 'test_user',
+      createdAt: new Date().toISOString(),
+      location: 'Test Location',
+      coordinates: { lat: 0, lng: 0 },
+      retweetCount: 0,
+      favoriteCount: 0,
+      hashtags: ['test', 'disaster'],
+      urls: [],
+      media: []
+    };
+
+    stats.fetched = 1;
+    
+    // Normalize the test alert
+    const normalized = normalizeTwitterData(testAlert);
+    stats.normalized = 1;
+
+    // Process with Kimi
+    const [summary, entities] = await Promise.all([
+      summarizeAlert(normalized),
+      extractEntities(normalized)
+    ]);
+    
+    stats.processed_by_kimi = 1;
+    
+    // Insert into database
+    await insertAlert({
+      ...normalized,
+      summary: summary.summary,
+      entities: JSON.stringify(entities.entities)
+    });
+    
+    stats.inserted = 1;
+    
+    logger.info({ stats }, 'Quick Twitter ingestion completed');
+    return { success: true, stats };
+    
+  } catch (error) {
+    logger.error({ error: error.message }, 'Quick Twitter ingestion failed');
+    stats.errors = 1;
+    return { success: false, stats, error: error.message };
+  } finally {
+    await logIngestionRun('twitter', stats.errors === 0 ? 'success' : 'error', stats);
+  }
+}
+
 module.exports = {
   ingestTwitterAlerts,
-  runTwitterIngestion
+  runTwitterIngestion,
+  runQuickTwitterIngestion
 };

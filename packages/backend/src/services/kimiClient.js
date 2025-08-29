@@ -1,6 +1,6 @@
 /**
- * Kimi API Client - Day 3
- * Handles text summarization and entity extraction
+ * Kimi API Client
+ * Handles text summarization, entity extraction, and embeddings
  */
 
 const pino = require('pino');
@@ -8,31 +8,93 @@ const logger = pino({ name: 'kimi-client' });
 
 class KimiClient {
   constructor(apiKey) {
-    this.apiKey = apiKey;
-    this.baseURL = 'https://api.moonshot.cn/v1';
+    this.apiKey = apiKey || process.env.KIMI_API_KEY;
+    this.baseURL = 'https://api.moonshot.ai/v1'; // Updated base URL
     this.model = 'moonshot-v1-8k';
+    
+    // Log API key info (without exposing the full key)
+    if (this.apiKey) {
+      const keyPrefix = this.apiKey.substring(0, 4);
+      const keySuffix = this.apiKey.length > 8 ? '...' + this.apiKey.substring(this.apiKey.length - 4) : '';
+      logger.info(`Initialized Kimi client with API key: ${keyPrefix}${keySuffix}`);
+    } else {
+      logger.warn('No API key provided for Kimi client');
+    }
   }
 
-  async makeRequest(endpoint, data) {
-    try {
-      const response = await fetch(`${this.baseURL}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`
-        },
-        body: JSON.stringify(data)
-      });
+  async makeRequest(endpoint, data, retries = 3, backoff = 1000) {
+    let lastError;
+    
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch(`${this.baseURL}${endpoint}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`,
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify(data),
+          timeout: 10000 // 10 second timeout
+        });
 
-      if (!response.ok) {
-        throw new Error(`Kimi API error: ${response.status} ${response.statusText}`);
+        if (!response.ok) {
+          let errorBody;
+          try {
+            errorBody = await response.text();
+            // Try to parse as JSON if possible
+            const jsonError = JSON.parse(errorBody);
+            errorBody = JSON.stringify(jsonError, null, 2);
+          } catch (e) {
+            // If not JSON, use as text
+          }
+          
+          // Don't retry on 4xx errors (except 429 - Too Many Requests)
+          if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+            const errorMessage = `Kimi API client error: ${response.status} ${response.statusText}\n${errorBody || ''}`;
+            throw new Error(errorMessage);
+          }
+          
+          // For retryable errors, throw a special error
+          throw new Error(`Kimi API error (attempt ${attempt}/${retries}): ${response.status} ${response.statusText}`);
+        }
+
+        const responseData = await response.json();
+        logger.debug({
+          endpoint,
+          attempt,
+          requestData: data,
+          responseData
+        }, 'Kimi API request successful');
+        
+        return responseData;
+        
+      } catch (error) {
+        lastError = error;
+        logger.warn({
+          attempt,
+          endpoint,
+          error: error.message,
+          remainingRetries: retries - attempt
+        }, 'Kimi API request attempt failed');
+        
+        // If we have retries left, wait with exponential backoff
+        if (attempt < retries) {
+          const delay = backoff * Math.pow(2, attempt - 1);
+          await new Promise(resolve => setTimeout(resolve, delay + Math.random() * 1000));
+        }
       }
-
-      return await response.json();
-    } catch (error) {
-      logger.error(error, 'Kimi API request failed');
-      throw error;
     }
+    
+    // If we get here, all retries failed
+    logger.error({
+      endpoint,
+      error: lastError.message,
+      stack: lastError.stack,
+      requestData: data
+    }, 'All Kimi API request attempts failed');
+    
+    throw lastError;
   }
 
   async summarizeAlert(text, maxLength = 200) {
@@ -104,17 +166,30 @@ Alert text: ${text}`;
 
       const content = response.choices[0].message.content.trim();
       
-      // Parse JSON response
-      let entities;
+      // Parse JSON response with multiple fallback strategies
+      let entities = {};
       try {
+        // Try direct JSON parse first
         entities = JSON.parse(content);
       } catch (parseError) {
-        // Try to extract JSON from response if wrapped in markdown
-        const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/);
-        if (jsonMatch) {
-          entities = JSON.parse(jsonMatch[1]);
-        } else {
-          throw parseError;
+        try {
+          // Try to extract JSON from markdown code block
+          const jsonMatch = content.match(/```(?:json)?\n([\s\S]*?)\n```/);
+          if (jsonMatch) {
+            entities = JSON.parse(jsonMatch[1].trim());
+          } else {
+            // Try to find and parse just the JSON part
+            const jsonStart = content.indexOf('{');
+            const jsonEnd = content.lastIndexOf('}') + 1;
+            if (jsonStart >= 0 && jsonEnd > jsonStart) {
+              entities = JSON.parse(content.substring(jsonStart, jsonEnd));
+            } else {
+              throw parseError;
+            }
+          }
+        } catch (e) {
+          logger.warn({ error: e.message, content }, 'Failed to parse entities as JSON, using fallback');
+          // Continue to fallback below
         }
       }
 
@@ -161,25 +236,34 @@ Alert text: ${text}`;
     const lowerText = text.toLowerCase();
     if (lowerText.includes('extreme') || lowerText.includes('catastrophic')) return 'extreme';
     if (lowerText.includes('severe') || lowerText.includes('major')) return 'severe';
-    if (lowerText.includes('moderate') || lowerText.includes('significant')) return 'high';
+    if (lowerText.includes('moderate') || lowerText.includes('significant')) return 'moderate';
     if (lowerText.includes('minor') || lowerText.includes('low')) return 'low';
-    return 'moderate';
+    return 'unknown';
   }
 
   extractLocations(text) {
-    // Simple regex-based location extraction (fallback)
-    const locationPatterns = [
-      /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),?\s*([A-Z][a-z]+)/g, // City, State
-      /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:district|region|area)/gi
-    ];
+    try {
+      // Simple regex-based location extraction (fallback)
+      const locationPatterns = [
+        /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),?\s*([A-Z][a-z]+)/g, // City, State
+        /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:district|region|area)/gi
+      ];
 
-    const locations = [];
-    for (const pattern of locationPatterns) {
-      const matches = [...text.matchAll(pattern)];
-      locations.push(...matches.map(match => match[1] || match[0]));
+      const locations = [];
+      for (const pattern of locationPatterns) {
+        try {
+          const matches = [...text.matchAll(pattern)];
+          locations.push(...matches.map(match => match[1] || match[0]));
+        } catch (e) {
+          logger.warn({ error: e.message }, 'Error matching location pattern');
+        }
+      }
+
+      return [...new Set(locations)].slice(0, 3); // Unique locations, max 3
+    } catch (error) {
+      logger.error({ error: error.message }, 'Error in extractLocations');
+      return [];
     }
-
-    return [...new Set(locations)].slice(0, 3); // Unique locations, max 3
   }
 
   async processAlert(alertData) {
@@ -256,6 +340,7 @@ Format your response in clear sections with specific, actionable guidance.`;
       throw error;
     }
   }
+
 }
 
 // Singleton instance
@@ -272,8 +357,7 @@ function getKimiClient() {
   return kimiClient;
 }
 
-// Create a single instance to use for the module exports
-const kimi = getKimiClient();
+// No need to create an instance here - consumers should use getKimiClient()
 
 // Helper function to ensure methods are bound to the instance
 function bindMethod(methodName) {
@@ -288,5 +372,6 @@ module.exports = {
   getKimiClient,
   summarizeAlert: bindMethod('summarizeAlert'),
   extractEntities: bindMethod('extractEntities'),
-  generateRAGResponse: bindMethod('generateRAGResponse')
+  generateRAGResponse: bindMethod('generateRAGResponse'),
+  processAlert: bindMethod('processAlert')
 };

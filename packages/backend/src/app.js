@@ -1,8 +1,9 @@
 /**
  * Main Express Application - AI Disaster Response Orchestrator
- * Includes retrieval and hybrid search endpoints
+ * Centralized API server with all routes and middleware
  */
 
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -11,10 +12,29 @@ const pino = require('pino');
 const pinoHttp = require('pino-http');
 
 // Import routes
+const searchRoutes = require('./routes/search');
 const retrieveRoutes = require('./routes/retrieve');
+const respondRoutes = require('./routes/respond');
+const incidentsRoutes = require('./routes/incidents');
+const { ActionOrchestrator } = require('./services/actionServices');
 
 const app = express();
 const logger = pino({ name: 'disaster-orchestrator' });
+
+// Initialize action services
+const actionOrchestrator = new ActionOrchestrator();
+app.set('actionOrchestrator', actionOrchestrator);
+
+// Initialize action services on startup
+(async () => {
+  try {
+    await actionOrchestrator.init();
+    logger.info('Action services initialized successfully');
+  } catch (error) {
+    logger.error({ error }, 'Failed to initialize action services');
+    // Don't crash the app, but some features may be limited
+  }
+})();
 
 // Security middleware
 app.use(helmet());
@@ -31,12 +51,18 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// Logging middleware
-app.use(pinoHttp({ logger }));
-
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Request logging
+app.use(pinoHttp({ logger }));
+
+// API Routes
+app.use('/api/search', searchRoutes);
+app.use('/api/incidents', incidentsRoutes);
+app.use('/api/retrieve', retrieveRoutes);
+app.use('/api/respond', respondRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -50,6 +76,7 @@ app.get('/health', (req, res) => {
 
 // API routes
 app.use('/api/retrieve', retrieveRoutes);
+app.use('/api/respond', respondRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {

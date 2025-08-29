@@ -3,10 +3,10 @@
  * Coordinates all data sources and manages pipeline scheduling
  */
 
-const { runWeatherIngestion } = require('./weatherIngest');
-const { runTwitterIngestion } = require('./twitterIngest');
-const { runSatelliteIngestion } = require('./satelliteIngest');
-const { runProtocolIngestion } = require('./protocolIngest');
+const { runWeatherIngestion, runQuickWeatherIngestion } = require('./weatherIngest');
+const { runTwitterIngestion, runQuickTwitterIngestion } = require('./twitterIngest');
+const { runSatelliteIngestion, runQuickSatelliteIngestion } = require('./satelliteIngest');
+const { runProtocolIngestion, runQuickProtocolIngestion } = require('./protocolIngest');
 const { logIngestionRun } = require('./dbInsert');
 const pino = require('pino');
 
@@ -223,10 +223,46 @@ async function runManualIngestion(source = 'all') {
   }
 }
 
+/**
+ * Run a quick ingestion with minimal data (for testing)
+ */
+async function runQuickIngestion() {
+  const startTime = Date.now();
+  logger.info('Starting quick ingestion (test mode)');
+
+  try {
+    // Run a single source with minimal data
+    const result = await runQuickWeatherIngestion();
+    
+    const stats = {
+      sources_processed: 1,
+      sources_successful: result.success ? 1 : 0,
+      total_fetched: result.stats?.fetched || 0,
+      total_inserted: result.stats?.inserted || 0,
+      total_errors: result.stats?.errors || 0,
+      duration_ms: Date.now() - startTime
+    };
+
+    logger.info({ stats }, 'Quick ingestion completed');
+    return { success: result.success, stats };
+  } catch (error) {
+    logger.error({ error }, 'Quick ingestion failed');
+    return { success: false, error: error.message };
+  }
+}
+
 // CLI handling
 if (require.main === module) {
   const args = process.argv.slice(2);
   const command = args[0] || 'run';
+  
+  // Quick mode handling
+  if (command === 'quick') {
+    runQuickIngestion()
+      .then(() => process.exit(0))
+      .catch(() => process.exit(1));
+    return;
+  }
   const source = args[1] || 'all';
 
   switch (command) {

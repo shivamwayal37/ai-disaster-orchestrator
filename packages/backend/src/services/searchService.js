@@ -1,53 +1,118 @@
 /**
- * Hybrid Search Service - Day 4
- * Implements full-text + vector similarity search with weighted ranking
+ * Enhanced Search Service
+ * Implements hybrid search combining full-text, vector similarity, and structured filters
  */
 
 const { prisma } = require('../db');
 const pino = require('pino');
+const { getVectorStore } = require('./vectorStore');
+const { getEmbeddingsClient } = require('./embeddingsClient');
 
 const logger = pino({ name: 'search-service' });
+const vectorStore = getVectorStore();
+const embeddingsClient = getEmbeddingsClient();
+
+// Search result types for better type safety
+const SEARCH_TYPES = {
+  DOCUMENT: 'document',
+  ALERT: 'alert',
+  RESOURCE: 'resource',
+  PROTOCOL: 'protocol'
+};
 
 /**
- * Full-text search using TiDB MATCH() AGAINST()
+ * Unified search across documents, alerts, and resources
+ * @param {string} query - Search query
+ * @param {Object} options - Search options
+ * @returns {Promise<Array>} Search results
  */
-async function fullTextSearch(query, limit = 10, category = null) {
-  try {
-    const whereClause = {
-      AND: [
-        // Full-text search condition
-        {
-          OR: [
-            { content: { contains: query } },
-            { title: { contains: query } },
-            { summary: { contains: query } }
-          ]
-        }
-      ]
-    };
+async function search(query, options = {}) {
+  const {
+    types = ['document', 'alert', 'resource'], // What to search
+    limit = 10, // Results per type
+    threshold = 0.7, // Vector similarity threshold (0-1, higher is stricter)
+    category = null, // Filter by category
+    location = null, // { lat, lng, radiusInKm }
+    dateRange = null, // { start, end }
+    includeVectors = false // Whether to include vector data in results
+  } = options;
 
-    // Add category filter if specified
-    if (category) {
-      whereClause.AND.push({ category });
+  try {
+    // Generate query embedding once for all vector searches
+    const [queryEmbedding] = await embeddingsClient.generateEmbeddings([query]);
+    
+    // Prepare common filters
+    const filters = [];
+    if (category) filters.push(`category = '${category}'`);
+    if (dateRange) {
+      if (dateRange.start) filters.push(`publishedAt >= '${dateRange.start.toISOString()}'`);
+      if (dateRange.end) filters.push(`publishedAt <= '${dateRange.end.toISOString()}'`);
+    }
+    const filterClause = filters.length > 0 ? `AND ${filters.join(' AND ')}` : '';
+
+    // Search each requested type in parallel
+    const searchPromises = [];
+    
+    if (types.includes('document')) {
+      searchPromises.push(
+        vectorStore.hybridSearch(query, {
+          model: 'documents',
+          limit,
+          threshold,
+          filters: filterClause,
+          includeVectors
+        })
+      );
+    } else {
+      searchPromises.push(Promise.resolve([]));
     }
 
-    const results = await prisma.document.findMany({
-      where: whereClause,
-      include: {
-        alert: {
-          select: {
-            alertType: true,
-            severity: true,
-            location: true,
-            latitude: true,
-            longitude: true
-          }
-        }
-      },
-      orderBy: [
-        { confidence: 'desc' },
-        { publishedAt: 'desc' }
-      ],
+    if (types.includes('alert')) {
+      searchPromises.push(
+        vectorStore.hybridSearch(query, {
+          model: 'alerts',
+          limit,
+          threshold,
+          filters: filterClause,
+          includeVectors
+        })
+      );
+    } else {
+      searchPromises.push(Promise.resolve([]));
+    }
+
+    if (types.includes('resource')) {
+      searchPromises.push(
+        vectorStore.hybridSearch(query, {
+          model: 'resources',
+          limit,
+          threshold,
+          filters: filterClause,
+          includeVectors
+        })
+      );
+    } else {
+      searchPromises.push(Promise.resolve([]));
+    }
+
+    // Wait for all searches to complete
+    const [documents, alerts, resources] = await Promise.all(searchPromises);
+
+    // Format and combine results
+    const results = [
+      ...documents.map(doc => ({ ...doc, type: SEARCH_TYPES.DOCUMENT })),
+      ...alerts.map(alert => ({ ...alert, type: SEARCH_TYPES.ALERT })),
+      ...resources.map(resource => ({ ...resource, type: SEARCH_TYPES.RESOURCE }))
+    ];
+
+    // Sort combined results by relevance
+    results.sort((a, b) => (b.relevance || 0) - (a.relevance || 0));
+
+    return results.slice(0, limit);
+  } catch (error) {
+    logger.error({ error: error.message, query, options }, 'Search failed');
+    throw error;
+  }
       take: limit
     });
 
@@ -67,167 +132,117 @@ async function fullTextSearch(query, limit = 10, category = null) {
     return scoredResults;
 
   } catch (error) {
-    logger.error(error, 'Full-text search failed');
-    throw error;
-  }
 }
 
 /**
- * Vector similarity search using TiDB Vector Search
+ * Find similar items by semantic similarity
+ * @param {number[]} vector - Query vector
+ * @param {Object} options - Search options
+ * @returns {Promise<Array>} Similar items
  */
-async function vectorSearch(queryEmbedding, limit = 10, category = null) {
-  try {
-    if (!queryEmbedding || !Array.isArray(queryEmbedding)) {
-      throw new Error('Invalid query embedding provided');
-    }
-
-    // Convert embedding array to vector format for TiDB
-    const vectorString = `[${queryEmbedding.join(',')}]`;
-    
-    // Build SQL query for vector similarity search
-    let sql = `
-      SELECT 
-        d.*,
-        a.alert_type,
-        a.severity,
-        a.location,
-        a.latitude,
-        a.longitude,
-        VEC_COSINE_DISTANCE(d.embedding, ?) as vectorDistance,
-        (1 - VEC_COSINE_DISTANCE(d.embedding, ?)) as vectorScore
-      FROM documents d
-      LEFT JOIN alerts a ON d.alert_id = a.id
-      WHERE d.embedding IS NOT NULL
-    `;
-
-    const params = [vectorString, vectorString];
-
-    // Add category filter if specified
-    if (category) {
-      sql += ` AND d.category = ?`;
-      params.push(category);
-    }
-
-    sql += `
-      ORDER BY vectorDistance ASC
-      LIMIT ?
-    `;
-    params.push(limit);
-
-    const results = await prisma.$queryRawUnsafe(sql, ...params);
-
-    const scoredResults = results.map(doc => ({
-      ...doc,
-      vectorScore: parseFloat(doc.vectorScore) || 0,
-      vectorDistance: parseFloat(doc.vectorDistance) || 1,
-      searchType: 'vector',
-      alert: doc.alertType ? {
-        alertType: doc.alertType,
-        severity: doc.severity,
-        location: doc.location,
-        latitude: doc.latitude,
-        longitude: doc.longitude
-      } : null
-    }));
-
-    logger.debug({
-      embeddingDim: queryEmbedding.length,
-      resultsCount: scoredResults.length,
-      category
-    }, 'Vector search completed');
-
-    return scoredResults;
-
-  } catch (error) {
-    logger.error(error, 'Vector search failed');
-    throw error;
-  }
-}
-
-/**
- * Hybrid search combining full-text and vector search with weighted ranking
- */
-async function hybridSearch(query, queryEmbedding = null, options = {}) {
+async function findSimilar(vector, options = {}) {
   const {
-    limit = 10,
-    category = null,
-    textWeight = 0.4,
-    vectorWeight = 0.6,
-    minTextScore = 0.1,
-    minVectorScore = 0.1
+    type = 'document', // document, alert, or resource
+    limit = 5,
+    threshold = 0.7,
+    filters = {}
   } = options;
 
   try {
-    logger.info({
-      query,
-      hasEmbedding: !!queryEmbedding,
-      textWeight,
-      vectorWeight,
-      category
-    }, 'Starting hybrid search');
-
-    // Run both searches in parallel
-    const [textResults, vectorResults] = await Promise.all([
-      fullTextSearch(query, limit * 2, category),
-      queryEmbedding ? vectorSearch(queryEmbedding, limit * 2, category) : Promise.resolve([])
-    ]);
-
-    // Create a map to combine results by document ID
-    const combinedResults = new Map();
-
-    // Process text search results
-    textResults.forEach(doc => {
-      const textScore = doc.textScore || 0;
-      if (textScore >= minTextScore) {
-        combinedResults.set(doc.id, {
-          ...doc,
-          textScore,
-          vectorScore: 0,
-          hybridScore: textWeight * textScore
-        });
-      }
+    return await vectorStore.findSimilar(vector, {
+      model: type,
+      limit,
+      threshold,
+      filters: Object.entries(filters)
+        .map(([key, value]) => `${key} = '${value}'`)
+        .join(' AND ')
     });
-
-    // Process vector search results
-    vectorResults.forEach(doc => {
-      const vectorScore = doc.vectorScore || 0;
-      if (vectorScore >= minVectorScore) {
-        const existing = combinedResults.get(doc.id);
-        if (existing) {
-          // Update existing result with vector score
-          existing.vectorScore = vectorScore;
-          existing.hybridScore = textWeight * existing.textScore + vectorWeight * vectorScore;
-          existing.searchType = 'hybrid';
-        } else {
-          // Add new vector-only result
-          combinedResults.set(doc.id, {
-            ...doc,
-            textScore: 0,
-            vectorScore,
-            hybridScore: vectorWeight * vectorScore,
-            searchType: 'vector'
-          });
-        }
-      }
-    });
-
-    // Sort by hybrid score and return top results
-    const finalResults = Array.from(combinedResults.values())
-      .sort((a, b) => b.hybridScore - a.hybridScore)
-      .slice(0, limit);
-
-    logger.info({
-      query,
-      textResultsCount: textResults.length,
-      vectorResultsCount: vectorResults.length,
-      combinedResultsCount: finalResults.length,
-      topScore: finalResults[0]?.hybridScore || 0
-    }, 'Hybrid search completed');
-
-    return finalResults;
-
   } catch (error) {
-    logger.error(error, 'Hybrid search failed');
+    logger.error({ error: error.message, type }, 'Find similar failed');
+    throw error;
+  }
+}
+
+/**
+ * Search for similar past incidents using hybrid search
+ * @param {string} query - Search query
+ * @param {Object} options - Search options
+ * @returns {Promise<Array>} Similar incidents
+ */
+async function searchSimilarIncidents(query, options = {}) {
+  const {
+    limit = 5,
+    threshold = 0.7,
+    location = null,
+    dateRange = null
+  } = options;
+
+  try {
+    const results = await search(query, {
+      types: ['document', 'alert'],
+      limit,
+      threshold,
+      dateRange,
+      // Add location filter if provided
+      filters: location ? {
+        latitude: { between: [location.lat - 0.1, location.lat + 0.1] },
+        longitude: { between: [location.lng - 0.1, location.lng + 0.1] }
+      } : {}
+    });
+
+    return results;
+  } catch (error) {
+    logger.error({ error: error.message, query }, 'Similar incidents search failed');
+    throw error;
+  }
+}
+
+/**
+ * Search for relevant protocols based on disaster type
+ * @param {string} disasterType - Type of disaster (e.g., 'earthquake', 'flood')
+ * @param {Object} options - Search options
+ * @returns {Promise<Array>} Relevant protocols
+ */
+async function searchProtocols(disasterType, options = {}) {
+  const {
+    limit = 5,
+    location = null,
+    threshold = 0.7
+  } = options;
+
+  try {
+    // Use hybrid search to find relevant protocols
+    const results = await search(disasterType, {
+      types: ['document'],
+      category: 'protocol',
+      limit: limit * 2, // Get more to filter by location
+      threshold
+    });
+
+    // If location is provided, calculate distances
+    if (location) {
+      results.forEach(proto => {
+        if (proto.latitude && proto.longitude) {
+          proto.distance = calculateDistance(
+            location.lat, location.lng,
+            proto.latitude, proto.longitude
+          );
+        } else {
+          proto.distance = null;
+        }
+      });
+
+      // Sort by distance (nulls last) then by relevance
+      results.sort((a, b) => {
+        if (a.distance === null) return 1;
+        if (b.distance === null) return -1;
+        return a.distance - b.distance;
+      });
+    }
+
+    return results.slice(0, limit);
+  } catch (error) {
+    logger.error({ error: error.message, disasterType }, 'Protocol search failed');
     throw error;
   }
 }
@@ -257,96 +272,20 @@ function calculateTextRelevance(query, document) {
   return Math.min(normalizedScore, 1);
 }
 
-/**
- * Search for relevant protocols based on disaster type
- */
-async function searchProtocols(disasterType, location = null, limit = 5) {
-  try {
-    const whereClause = {
-      category: 'protocol',
-      OR: [
-        { content: { contains: disasterType } },
-        { title: { contains: disasterType } }
-      ]
-    };
-
-    if (location) {
-      whereClause.OR.push(
-        { content: { contains: location } },
-        { title: { contains: location } }
-      );
-    }
-
-    const protocols = await prisma.document.findMany({
-      where: whereClause,
-      orderBy: [
-        { confidence: 'desc' },
-        { updatedAt: 'desc' }
-      ],
-      take: limit
-    });
-
-    logger.debug({
-      disasterType,
-      location,
-      protocolsFound: protocols.length
-    }, 'Protocol search completed');
-
-    return protocols;
-
-  } catch (error) {
-    logger.error(error, 'Protocol search failed');
-    throw error;
-  }
-}
-
-/**
- * Search for similar past incidents
- */
-async function searchSimilarIncidents(query, queryEmbedding = null, options = {}) {
-  const {
-    limit = 10,
-    excludeCategories = ['protocol'],
-    timeRange = null // { start: Date, end: Date }
-  } = options;
-
-  try {
-    const searchOptions = {
-      ...options,
-      limit: limit * 2 // Get more results to filter
-    };
-
-    // Exclude protocols from incident search
-    if (excludeCategories.length > 0) {
-      searchOptions.category = {
-        notIn: excludeCategories
-      };
-    }
-
-    const results = await hybridSearch(query, queryEmbedding, searchOptions);
-
-    // Apply time range filter if specified
-    let filteredResults = results;
-    if (timeRange) {
-      filteredResults = results.filter(doc => {
-        const docDate = new Date(doc.publishedAt);
-        return docDate >= timeRange.start && docDate <= timeRange.end;
-      });
-    }
-
-    return filteredResults.slice(0, limit);
-
-  } catch (error) {
-    logger.error(error, 'Similar incidents search failed');
-    throw error;
-  }
-}
-
 module.exports = {
-  fullTextSearch,
-  vectorSearch,
-  hybridSearch,
+  // Core search functions
+  search,
+  findSimilar,
+  
+  // Domain-specific search
   searchProtocols,
   searchSimilarIncidents,
-  calculateTextRelevance
+  
+  // Constants
+  SEARCH_TYPES,
+  
+  // For backward compatibility
+  hybridSearch: (query, options) => search(query, { ...options, types: ['document'] }),
+  fullTextSearch: (query, options) => search(query, { ...options, types: ['document'], threshold: 0 }),
+  vectorSearch: (vector, options) => findSimilar(vector, { ...options, type: 'document' })
 };

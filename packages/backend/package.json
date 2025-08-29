@@ -4,13 +4,22 @@
   "private": true,
   "main": "src/index.js",
   "scripts": {
-    "dev": "NODE_ENV=development nodemon src/index.js",
+    "dev": "nodemon src/index.js",
     "start": "node src/index.js",
-    "lint": "eslint src || true",
-    "db:generate": "prisma generate",
-    "db:push": "prisma db push",
-    "db:migrate": "prisma migrate dev",
-    "db:studio": "prisma studio",
+    "test": "jest --detectOpenHandles --forceExit",
+    "test:integration": "jest --detectOpenHandles --forceExit tests/integration",
+    "test:embeddings": "node scripts/test-kimi-embedding.js",
+    "test:embedding-worker": "node scripts/run-embedding-tests.js",
+    "test:pipeline": "node src/ingestion/test-pipeline.js full",
+    "test:pipeline:quick": "node src/ingestion/test-pipeline.js quick",
+    "ingest": "node src/ingestion/orchestrator.js run",
+    "ingest:quick": "node src/ingestion/orchestrator.js quick",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
     "db:test": "node scripts/test-db.js"
   },
   "dependencies": {
@@ -21,14 +30,24 @@
     "dotenv": "^16.0.0",
     "express": "^4.18.2",
     "express-rate-limit": "^8.0.1",
+    "@googlemaps/polyline-codec": "^1.0.0",
     "helmet": "^8.1.0",
     "mysql2": "^3.2.0",
+    "node-fetch": "^2.6.7",
     "pino": "^8.0.0",
-    "pino-http": "^10.5.0"
+    "pino-http": "^10.5.0",
+    "twilio": "^4.23.0"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
     "eslint": "^8.0.0",
+    "jest": "^29.5.0",
+    "jest-mock-extended": "^3.0.5",
     "nodemon": "^2.0.22",
-    "prisma": "^5.22.0"
+    "pino-pretty": "^10.2.3",
+    "prisma": "^5.22.0",
+    "supertest": "^6.3.3",
+    "ts-jest": "^29.1.0"
   }
 }

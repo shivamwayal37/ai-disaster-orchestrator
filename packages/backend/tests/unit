@@ -1,0 +1,186 @@
+const { PrismaClient } = require('@prisma/client');
+const { EmbeddingWorker } = require('../src/workers/embeddingWorker');
+const { mockDeep, mockReset } = 'jest-mock-extended';
+
+// Mock Prisma client
+jest.mock('@prisma/client', () => {
+  const mockPrisma = {
+    $executeRaw: jest.fn(),
+    workQueue: {
+      findMany: jest.fn(),
+      updateMany: jest.fn(),
+      update: jest.fn(),
+      create: jest.fn(),
+      findFirst: jest.fn(),
+      count: jest.fn()
+    },
+    document: {
+      count: jest.fn()
+    },
+    $disconnect: jest.fn()
+  };
+  return {
+    PrismaClient: jest.fn(() => mockPrisma),
+    mockPrisma
+  };
+});
+
+describe('EmbeddingWorker', () => {
+  let worker;
+  let mockPrisma;
+  
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = 'test-api-key';
+    mockPrisma = new PrismaClient();
+    worker = new EmbeddingWorker({
+      batchSize: 2,
+      pollInterval: 0 // Disable polling for tests
+    });
+    
+    // Mock fetch
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          data: [
+            { embedding: Array(1536).fill(0.1) },
+            { embedding: Array(1536).fill(0.2) }
+          ],
+          usage: { total_tokens: 100 }
+        })
+      })
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+    mockReset(mockPrisma);
+  });
+
+  describe('generateEmbeddings', () => {
+    it('should generate embeddings for input texts', async () => {
+      const texts = ['test text 1', 'test text 2'];
+      const embeddings = await worker.generateEmbeddings(texts);
+      
+      expect(embeddings).toHaveLength(2);
+      expect(embeddings[0]).toHaveLength(1536);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('should throw error when API call fails', async () => {
+      global.fetch.mockResolvedValueOnce({
+        ok: false,
+        json: () => Promise.resolve({
+          error: { message: 'API error' }
+        })
+      });
+      
+      await expect(worker.generateEmbeddings(['test'])).rejects.toThrow('OpenAI API error');
+    });
+  });
+
+  describe('processPendingTasks', () => {
+    beforeEach(() => {
+      // Mock findMany to return test tasks
+      mockPrisma.workQueue.findMany.mockResolvedValue([
+        {
+          id: 1,
+          payload: { document_id: 'doc1', text: 'test document 1' },
+          status: 'PENDING'
+        },
+        {
+          id: 2,
+          payload: { document_id: 'doc2', text: 'test document 2' },
+          status: 'PENDING'
+        }
+      ]);
+      
+      // Mock updateMany to resolve successfully
+      mockPrisma.workQueue.updateMany.mockResolvedValue({ count: 2 });
+      
+      // Mock $executeRaw for document update
+      mockPrisma.$executeRaw.mockResolvedValue(1);
+      
+      // Mock update for task completion
+      mockPrisma.workQueue.update.mockResolvedValue({});
+    });
+
+    it('should process pending tasks successfully', async () => {
+      const result = await worker.processPendingTasks();
+      
+      expect(result.processed).toBe(2);
+      expect(result.errors).toBe(0);
+      expect(mockPrisma.workQueue.updateMany).toHaveBeenCalled();
+      expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(2);
+    });
+
+    it('should handle document update failures', async () => {
+      // Make document update fail for second document
+      mockPrisma.$executeRaw
+        .mockResolvedValueOnce(1) // First update succeeds
+        .mockRejectedValueOnce(new Error('DB error')); // Second update fails
+      
+      const result = await worker.processPendingTasks();
+      
+      expect(result.processed).toBe(1);
+      expect(result.errors).toBe(1);
+      expect(mockPrisma.workQueue.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 2 },
+          data: expect.objectContaining({
+            status: 'ERROR',
+            errorMsg: 'DB error'
+          })
+        })
+      );
+    });
+  });
+
+  describe('queueDocumentForEmbedding', () => {
+    it('should create a new task for new document', async () => {
+      mockPrisma.workQueue.findFirst.mockResolvedValue(null);
+      mockPrisma.workQueue.create.mockResolvedValue({ id: 1 });
+      
+      const result = await EmbeddingWorker.queueDocumentForEmbedding('doc1', 'test content');
+      
+      expect(result.taskId).toBe(1);
+      expect(mockPrisma.workQueue.create).toHaveBeenCalled();
+    });
+
+    it('should return existing task if document is already queued', async () => {
+      mockPrisma.workQueue.findFirst.mockResolvedValue({
+        id: 1,
+        status: 'PENDING'
+      });
+      
+      const result = await EmbeddingWorker.queueDocumentForEmbedding('doc1', 'test content');
+      
+      expect(result.taskId).toBe(1);
+      expect(mockPrisma.workQueue.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getStats', () => {
+    it('should return worker statistics', async () => {
+      mockPrisma.workQueue.count
+        .mockResolvedValueOnce(1) // pending
+        .mockResolvedValueOnce(2) // running
+        .mockResolvedValueOnce(10) // completed
+        .mockResolvedValueOnce(3); // errors
+      
+      mockPrisma.document.count
+        .mockResolvedValueOnce(5) // with embeddings
+        .mockResolvedValueOnce(20); // total
+      
+      mockPrisma.$queryRaw.mockResolvedValue([
+        { count: 10, date: new Date('2023-01-01') }
+      ]);
+      
+      const stats = await worker.getStats();
+      
+      expect(stats.status).toBe('RUNNING');
+      expect(stats.tasks.pending).toBe(1);
+      expect(stats.documents.completionRate).toBe(25); // 5/20 = 25%
+    });
+  });
+});

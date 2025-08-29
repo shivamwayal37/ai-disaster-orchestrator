@@ -5,7 +5,10 @@
 
 const { prisma } = require('../db');
 const pino = require('pino');
+const { getVectorStore } = require('../services/vectorStore');
+
 const logger = pino({ name: 'db-insert' });
+const vectorStore = getVectorStore();
 
 /**
  * Insert normalized alert into TiDB documents table
@@ -32,6 +35,14 @@ async function insertAlert(normalizedAlert, kimiProcessed = null) {
     const document = await prisma.document.create({
       data: documentData
     });
+    
+    // Generate and store embeddings in the background
+    try {
+      await vectorStore.embedAndStore(document, 'documents');
+    } catch (error) {
+      logger.error({ error: error.message, documentId: document.id }, 'Failed to generate embeddings');
+      // Continue even if embedding fails - the document is still inserted
+    }
 
     // Create corresponding alert record if it's a real-time alert
     let alertRecord = null;
