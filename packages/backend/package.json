@@ -11,7 +11,7 @@
     "test:embeddings": "node scripts/test-kimi-embedding.js",
     "test:embedding-worker": "node scripts/run-embedding-tests.js",
     "test:pipeline": "node src/ingestion/test-pipeline.js full",
-    "test:pipeline:quick": "node src/ingestion/test-pipeline.js quick",
+    "test:pipeline:quick": "node src/ingestion/test-pipeline.js full",
     "ingest": "node src/ingestion/orchestrator.js run",
     "ingest:quick": "node src/ingestion/orchestrator.js quick",
     "lint": "eslint .",

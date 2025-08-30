@@ -6,8 +6,10 @@
 const { runManualIngestion } = require('./orchestrator');
 const { prisma } = require('../db');
 const pino = require('pino');
+const { getEmbeddingsClient } = require('../services/embeddingsClient');
 
 const logger = pino({ name: 'pipeline-test' });
+const embeddingsClient = getEmbeddingsClient();
 
 /**
  * Test the complete ingestion pipeline
@@ -62,23 +64,42 @@ async function testIngestionPipeline() {
     console.log('\n5️⃣ Testing search functionality...');
     
     // Test full-text search
+    const searchTerm = 'fire';
     const searchResults = await prisma.document.findMany({
       where: {
         content: {
-          contains: 'fire'
+          contains: searchTerm
         }
       },
       take: 3
     });
     
-    console.log(`🔍 Full-text search results: ${searchResults.length} documents found`);
+    console.log(`🔍 Full-text search results for '${searchTerm}': ${searchResults.length} documents found`);
     
-    if (searchResults.length > 0) {
-      console.log('Sample result:', {
-        title: searchResults[0].title,
-        category: searchResults[0].category,
-        confidence: searchResults[0].confidence
-      });
+    // Test vector search if embeddings are available
+    console.log('\n🧠 Testing vector search...');
+    try {
+      const [embedding] = await embeddingsClient.generateEmbeddings([searchTerm]);
+      const vectorResults = await prisma.$queryRaw`
+        SELECT id, title, category, 
+               VECTOR_DISTANCE(embedding, ${JSON.stringify(embedding)}) as distance
+        FROM documents
+        WHERE JSON_VALID(embedding)
+        ORDER BY distance ASC
+        LIMIT 3
+      `;
+      
+      console.log(`🔢 Vector search results for '${searchTerm}': ${vectorResults.length} documents found`);
+      if (vectorResults.length > 0) {
+        console.log('Top vector result:', {
+          title: vectorResults[0].title,
+          category: vectorResults[0].category,
+          distance: vectorResults[0].distance
+        });
+      }
+    } catch (error) {
+      console.warn('⚠️ Vector search test skipped - embeddings may not be generated yet');
+      console.debug('Vector search error:', error.message);
     }
 
     // Step 6: Check ingestion logs
@@ -105,7 +126,8 @@ async function testIngestionPipeline() {
     console.log(`  - Documents: ${documentCount}`);
     console.log(`  - Alerts: ${alertCount}`);
     console.log(`  - Queue items: ${workQueueCount}`);
-    console.log(`  - Search working: ${searchResults.length > 0 ? 'Yes' : 'No'}`);
+    console.log(`  - Full-text search working: ${searchResults.length > 0 ? 'Yes' : 'No'}`);
+    console.log(`  - Vector search working: ${vectorResults ? 'Yes' : 'No'}`);
     console.log(`  - Logging working: ${recentLogs.length > 0 ? 'Yes' : 'No'}`);
 
     return {
@@ -114,7 +136,8 @@ async function testIngestionPipeline() {
         documents: documentCount,
         alerts: alertCount,
         queueItems: workQueueCount,
-        searchWorking: searchResults.length > 0,
+        fullTextSearchWorking: searchResults.length > 0,
+        vectorSearchWorking: !!vectorResults,
         loggingWorking: recentLogs.length > 0
       }
     };

@@ -9,25 +9,30 @@ datasource db {
 }
 
 model Alert {
-  id          BigInt     @id @default(autoincrement())
-  source      String     @db.VarChar(100)
-  alertType   String     @map("alert_type") @db.VarChar(100)
-  title       String     @db.VarChar(255)
-  description String     @db.Text
-  severity    Int        @db.TinyInt
-  location    String?    @db.VarChar(255)
+  id          BigInt        @id @default(autoincrement())
+  source      String        @db.VarChar(100)
+  alertType   String        @map("alert_type") @db.VarChar(100)
+  title       String        @db.VarChar(255)
+  description String        @db.Text
+  severity    Int           @db.TinyInt
+  location    String?       @db.VarChar(255)
   // Vector embedding for semantic search (768 dimensions for Jina base model)
-  embedding   Unsupported("VECTOR(768)")? @db.Vector(768)
+  embedding   Unsupported("VECTOR(768)")?
   latitude    Float?
   longitude   Float?
-  startTime   DateTime   @map("start_time")
-  endTime     DateTime?  @map("end_time")
-  isActive    Boolean    @default(true) @map("is_active")
-  rawData     Json?      @map("raw_data")
-  createdAt   DateTime   @default(now()) @map("created_at")
-  updatedAt   DateTime   @updatedAt @map("updated_at")
+  startTime   DateTime      @map("start_time")
+  endTime     DateTime?     @map("end_time")
+  isActive    Boolean       @default(true) @map("is_active")
+  rawData     Json?         @map("raw_data")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
   documents   Document[]
+  actions     ActionAudit[]
 
+  // Full-text search on title and description
+  @@fulltext([title, description])
+  // Note: Vector indexes must be added via SQL migration
+  // Example: CREATE VECTOR INDEX ON alerts(embedding) USING HNSW;
   @@index([alertType])
   @@index([severity])
   @@index([latitude, longitude])
@@ -40,14 +45,15 @@ model Document {
   title          String    @db.VarChar(255)
   content        String    @db.Text
   summary        String?   @db.Text
-  source         String    @db.VarChar(100)
+  source         String?   @db.VarChar(100) @default("system")
   category       String    @db.VarChar(100)
-  // Vector embedding for semantic search
-  embedding      Unsupported("VECTOR(768)")? @db.Vector(768)
+  // Vector embedding for semantic search (768 dimensions for Jina models)
+  embedding      Unsupported("VECTOR(768)")?
   sourceUrl      String?   @map("source_url") @db.VarChar(500)
   mediaUrl       String?   @map("media_url") @db.VarChar(500)
   language       String    @default("en") @db.VarChar(10)
-  imageEmbedding Bytes?    @map("image_embedding")
+  // Optional image embeddings (same dimension as text for now)
+  imageEmbedding Unsupported("VECTOR(768)")? @map("image_embedding")
   wordCount      Int?      @map("word_count")
   readingTime    Int?      @map("reading_time")
   confidence     Float?    @db.Float
@@ -58,8 +64,9 @@ model Document {
   alert          Alert?    @relation(fields: [alertId], references: [id])
 
   // Hybrid search: full-text + vector similarity
+  // Note: Vector indexes must be added via SQL migration
+  // Example: CREATE VECTOR INDEX ON documents(embedding) USING HNSW;
   @@fulltext([title, content])
-  @@index([embedding(768)], type: Vector)
   @@index([category])
   @@index([publishedAt])
   @@index([confidence])
@@ -90,13 +97,15 @@ model Resource {
   services       Json?
   disasterTypes  Json?    @map("disaster_types")
   lastUpdated    DateTime @default(now()) @map("last_updated")
-  embedding      Bytes?
+  // Vector embedding for semantic search (768 dimensions for Jina models)
+  embedding      Unsupported("VECTOR(768)")?
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   // Hybrid search: full-text + vector similarity
+  // Note: Vector indexes must be added via SQL migration
+  // Example: CREATE VECTOR INDEX ON resources(embedding) USING HNSW;
   @@fulltext([name, description, address, city, state])
-  @@index([embedding(768)], type: Vector)
   @@index([type])
   @@index([latitude, longitude])
   @@index([isActive, isEmergency])
@@ -106,6 +115,7 @@ model Resource {
 model ActionAudit {
   id        BigInt   @id @default(autoincrement())
   alertId   BigInt?  @map("alert_id")
+  alert     Alert?   @relation(fields: [alertId], references: [id], onDelete: Cascade)
   action    String   @db.VarChar(100)
   payload   Json?
   status    String   @db.VarChar(50)

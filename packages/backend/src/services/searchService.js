@@ -1,6 +1,6 @@
 /**
- * Enhanced Search Service
- * Implements hybrid search combining full-text, vector similarity, and structured filters
+ * Enhanced Search Service (Day 4)
+ * Hybrid search: vector + keyword + filters
  */
 
 const { prisma } = require('../db');
@@ -12,265 +12,137 @@ const logger = pino({ name: 'search-service' });
 const vectorStore = getVectorStore();
 const embeddingsClient = getEmbeddingsClient();
 
-// Search result types for better type safety
+/**
+ * Full-text search (fallback / baseline)
+ */
+async function fullTextSearch(query, { type = 'document', limit = 10, filters = {} }) {
+  try {
+    return prisma[type].findMany({
+      where: {
+        AND: [
+          { OR: [{ title: { contains: query } }, { content: { contains: query } }] },
+          ...Object.entries(filters).map(([k, v]) => ({ [k]: v }))
+        ]
+      },
+      take: limit
+    });
+  } catch (error) {
+    logger.error({ error: error.message, query }, 'Full-text search failed');
+    return [];
+  }
+}
+
+/**
+ * Vector similarity search (via Jina + TiDB vector col)
+ */
+async function vectorSearch(query, { type = 'document', limit = 10, threshold = 0.7, filters = {} }) {
+  try {
+    const [embedding] = await embeddingsClient.generateEmbeddings([query]);
+    return vectorStore.findSimilar(embedding, { model: type, limit, threshold, filters });
+  } catch (error) {
+    logger.error({ error: error.message, query }, 'Vector search failed');
+    return [];
+  }
+}
+
+/**
+ * Hybrid search = weighted merge of vector + keyword
+ */
+async function hybridSearch(query, {
+  type = 'document',
+  limit = 10,
+  vectorWeight = 0.7,
+  textWeight = 0.3,
+  filters = {}
+}) {
+  const [vecResults, txtResults] = await Promise.all([
+    vectorSearch(query, { type, limit, filters }),
+    fullTextSearch(query, { type, limit, filters })
+  ]);
+
+  // Normalize weights
+  const total = vectorWeight + textWeight;
+  const vw = vectorWeight / total;
+  const tw = textWeight / total;
+
+  const resultMap = new Map();
+
+  vecResults.forEach((doc, i) => {
+    const key = `${type}_${doc.id}`;
+    const score = (1 - i / vecResults.length) * vw;
+    resultMap.set(key, { ...doc, vectorScore: score, textScore: 0, combinedScore: score });
+  });
+
+  txtResults.forEach((doc, i) => {
+    const key = `${type}_${doc.id}`;
+    const score = (1 - i / txtResults.length) * tw;
+    if (resultMap.has(key)) {
+      const existing = resultMap.get(key);
+      resultMap.set(key, { ...existing, textScore: score, combinedScore: existing.combinedScore + score });
+    } else {
+      resultMap.set(key, { ...doc, vectorScore: 0, textScore: score, combinedScore: score });
+    }
+  });
+
+  return Array.from(resultMap.values())
+    .sort((a, b) => b.combinedScore - a.combinedScore)
+    .slice(0, limit);
+}
+
+// Helper function to maintain backward compatibility
+async function search(query, options = {}) {
+  // If a vector is provided, use vector search
+  if (Array.isArray(query)) {
+    return vectorSearch('', { ...options, vector: query });
+  }
+  
+  // Otherwise use hybrid search with default weights
+  return hybridSearch(query, {
+    ...options,
+    vectorWeight: 0.7,
+    textWeight: 0.3
+  });
+}
+
+// Maintain backward compatibility with existing code
+async function findSimilar(vector, options = {}) {
+  return vectorSearch('', { ...options, vector });
+}
+
+// Simplified search for similar incidents
+async function searchSimilarIncidents(query, options = {}) {
+  return hybridSearch(query, {
+    type: 'alert',
+    ...options,
+    filters: {
+      ...options.filters,
+      status: 'ACTIVE'  // Only search active alerts by default
+    }
+  });
+}
+
+// Simplified protocol search
+async function searchProtocols(disasterType, options = {}) {
+  return hybridSearch(disasterType, {
+    type: 'document',
+    ...options,
+    filters: {
+      ...options.filters,
+      category: 'protocol',
+      // Add any additional protocol-specific filters
+    }
+  });
+}
+
+/**
+ * Search result types for better type safety
+ */
 const SEARCH_TYPES = {
   DOCUMENT: 'document',
   ALERT: 'alert',
   RESOURCE: 'resource',
   PROTOCOL: 'protocol'
 };
-
-/**
- * Unified search across documents, alerts, and resources
- * @param {string} query - Search query
- * @param {Object} options - Search options
- * @returns {Promise<Array>} Search results
- */
-async function search(query, options = {}) {
-  const {
-    types = ['document', 'alert', 'resource'], // What to search
-    limit = 10, // Results per type
-    threshold = 0.7, // Vector similarity threshold (0-1, higher is stricter)
-    category = null, // Filter by category
-    location = null, // { lat, lng, radiusInKm }
-    dateRange = null, // { start, end }
-    includeVectors = false // Whether to include vector data in results
-  } = options;
-
-  try {
-    // Generate query embedding once for all vector searches
-    const [queryEmbedding] = await embeddingsClient.generateEmbeddings([query]);
-    
-    // Prepare common filters
-    const filters = [];
-    if (category) filters.push(`category = '${category}'`);
-    if (dateRange) {
-      if (dateRange.start) filters.push(`publishedAt >= '${dateRange.start.toISOString()}'`);
-      if (dateRange.end) filters.push(`publishedAt <= '${dateRange.end.toISOString()}'`);
-    }
-    const filterClause = filters.length > 0 ? `AND ${filters.join(' AND ')}` : '';
-
-    // Search each requested type in parallel
-    const searchPromises = [];
-    
-    if (types.includes('document')) {
-      searchPromises.push(
-        vectorStore.hybridSearch(query, {
-          model: 'documents',
-          limit,
-          threshold,
-          filters: filterClause,
-          includeVectors
-        })
-      );
-    } else {
-      searchPromises.push(Promise.resolve([]));
-    }
-
-    if (types.includes('alert')) {
-      searchPromises.push(
-        vectorStore.hybridSearch(query, {
-          model: 'alerts',
-          limit,
-          threshold,
-          filters: filterClause,
-          includeVectors
-        })
-      );
-    } else {
-      searchPromises.push(Promise.resolve([]));
-    }
-
-    if (types.includes('resource')) {
-      searchPromises.push(
-        vectorStore.hybridSearch(query, {
-          model: 'resources',
-          limit,
-          threshold,
-          filters: filterClause,
-          includeVectors
-        })
-      );
-    } else {
-      searchPromises.push(Promise.resolve([]));
-    }
-
-    // Wait for all searches to complete
-    const [documents, alerts, resources] = await Promise.all(searchPromises);
-
-    // Format and combine results
-    const results = [
-      ...documents.map(doc => ({ ...doc, type: SEARCH_TYPES.DOCUMENT })),
-      ...alerts.map(alert => ({ ...alert, type: SEARCH_TYPES.ALERT })),
-      ...resources.map(resource => ({ ...resource, type: SEARCH_TYPES.RESOURCE }))
-    ];
-
-    // Sort combined results by relevance
-    results.sort((a, b) => (b.relevance || 0) - (a.relevance || 0));
-
-    return results.slice(0, limit);
-  } catch (error) {
-    logger.error({ error: error.message, query, options }, 'Search failed');
-    throw error;
-  }
-      take: limit
-    });
-
-    // Calculate text relevance scores
-    const scoredResults = results.map(doc => ({
-      ...doc,
-      textScore: calculateTextRelevance(query, doc),
-      searchType: 'fulltext'
-    }));
-
-    logger.debug({
-      query,
-      resultsCount: scoredResults.length,
-      category
-    }, 'Full-text search completed');
-
-    return scoredResults;
-
-  } catch (error) {
-}
-
-/**
- * Find similar items by semantic similarity
- * @param {number[]} vector - Query vector
- * @param {Object} options - Search options
- * @returns {Promise<Array>} Similar items
- */
-async function findSimilar(vector, options = {}) {
-  const {
-    type = 'document', // document, alert, or resource
-    limit = 5,
-    threshold = 0.7,
-    filters = {}
-  } = options;
-
-  try {
-    return await vectorStore.findSimilar(vector, {
-      model: type,
-      limit,
-      threshold,
-      filters: Object.entries(filters)
-        .map(([key, value]) => `${key} = '${value}'`)
-        .join(' AND ')
-    });
-  } catch (error) {
-    logger.error({ error: error.message, type }, 'Find similar failed');
-    throw error;
-  }
-}
-
-/**
- * Search for similar past incidents using hybrid search
- * @param {string} query - Search query
- * @param {Object} options - Search options
- * @returns {Promise<Array>} Similar incidents
- */
-async function searchSimilarIncidents(query, options = {}) {
-  const {
-    limit = 5,
-    threshold = 0.7,
-    location = null,
-    dateRange = null
-  } = options;
-
-  try {
-    const results = await search(query, {
-      types: ['document', 'alert'],
-      limit,
-      threshold,
-      dateRange,
-      // Add location filter if provided
-      filters: location ? {
-        latitude: { between: [location.lat - 0.1, location.lat + 0.1] },
-        longitude: { between: [location.lng - 0.1, location.lng + 0.1] }
-      } : {}
-    });
-
-    return results;
-  } catch (error) {
-    logger.error({ error: error.message, query }, 'Similar incidents search failed');
-    throw error;
-  }
-}
-
-/**
- * Search for relevant protocols based on disaster type
- * @param {string} disasterType - Type of disaster (e.g., 'earthquake', 'flood')
- * @param {Object} options - Search options
- * @returns {Promise<Array>} Relevant protocols
- */
-async function searchProtocols(disasterType, options = {}) {
-  const {
-    limit = 5,
-    location = null,
-    threshold = 0.7
-  } = options;
-
-  try {
-    // Use hybrid search to find relevant protocols
-    const results = await search(disasterType, {
-      types: ['document'],
-      category: 'protocol',
-      limit: limit * 2, // Get more to filter by location
-      threshold
-    });
-
-    // If location is provided, calculate distances
-    if (location) {
-      results.forEach(proto => {
-        if (proto.latitude && proto.longitude) {
-          proto.distance = calculateDistance(
-            location.lat, location.lng,
-            proto.latitude, proto.longitude
-          );
-        } else {
-          proto.distance = null;
-        }
-      });
-
-      // Sort by distance (nulls last) then by relevance
-      results.sort((a, b) => {
-        if (a.distance === null) return 1;
-        if (b.distance === null) return -1;
-        return a.distance - b.distance;
-      });
-    }
-
-    return results.slice(0, limit);
-  } catch (error) {
-    logger.error({ error: error.message, disasterType }, 'Protocol search failed');
-    throw error;
-  }
-}
-
-/**
- * Calculate text relevance score using simple heuristics
- */
-function calculateTextRelevance(query, document) {
-  const queryTerms = query.toLowerCase().split(/\s+/);
-  const content = (document.content + ' ' + document.title + ' ' + (document.summary || '')).toLowerCase();
-  
-  let score = 0;
-  let totalTerms = queryTerms.length;
-
-  queryTerms.forEach(term => {
-    if (term.length < 3) return; // Skip short terms
-    
-    const termCount = (content.match(new RegExp(term, 'g')) || []).length;
-    if (termCount > 0) {
-      score += Math.min(termCount / 10, 1); // Cap individual term contribution
-    }
-  });
-
-  // Normalize by query length and add confidence boost
-  const normalizedScore = (score / totalTerms) * (document.confidence || 0.8);
-  
-  return Math.min(normalizedScore, 1);
-}
 
 module.exports = {
   // Core search functions
@@ -282,10 +154,96 @@ module.exports = {
   searchSimilarIncidents,
   
   // Constants
+  // Search types enum
   SEARCH_TYPES,
   
+  /**
+   * Hybrid search combining vector similarity and full-text search
+   * @param {string} query - Search query
+   * @param {Object} options - Search options
+   * @param {number} [options.vectorWeight=0.7] - Weight for vector similarity (0-1)
+   * @param {number} [options.textWeight=0.3] - Weight for full-text search (0-1)
+   * @param {number} [options.limit=10] - Maximum number of results
+   * @returns {Promise<Array>} Search results with combined scores
+   */
+  hybridSearch: async (query, options = {}) => {
+    const {
+      vectorWeight = 0.7,
+      textWeight = 0.3,
+      limit = 10,
+      ...searchOptions
+    } = options;
+
+    // Normalize weights
+    const totalWeight = vectorWeight + textWeight;
+    const normalizedVectorWeight = vectorWeight / totalWeight;
+    const normalizedTextWeight = textWeight / totalWeight;
+
+    try {
+      // Run both searches in parallel
+      const [vectorResults, textResults] = await Promise.all([
+        search(query, { 
+          ...searchOptions, 
+          threshold: 0, 
+          includeVectors: true 
+        }),
+        search(query, { 
+          ...searchOptions, 
+          threshold: 0,
+          includeVectors: false
+        })
+      ]);
+
+      // Create a map of document IDs to their scores
+      const resultMap = new Map();
+
+      // Process vector results
+      vectorResults.forEach((doc, index) => {
+        const score = (1 - (index / vectorResults.length)) * normalizedVectorWeight;
+        resultMap.set(`${doc.type}_${doc.id}`, {
+          ...doc,
+          vectorScore: score,
+          textScore: 0,
+          combinedScore: score
+        });
+      });
+
+      // Process text results and combine scores
+      textResults.forEach((doc, index) => {
+        const key = `${doc.type}_${doc.id}`;
+        const score = (1 - (index / textResults.length)) * normalizedTextWeight;
+        
+        if (resultMap.has(key)) {
+          // Update existing result with text score
+          const existing = resultMap.get(key);
+          resultMap.set(key, {
+            ...existing,
+            textScore: score,
+            combinedScore: existing.combinedScore + score
+          });
+        } else {
+          // Add new result with text score only
+          resultMap.set(key, {
+            ...doc,
+            vectorScore: 0,
+            textScore: score,
+            combinedScore: score
+          });
+        }
+      });
+
+      // Convert map to array, sort by combined score, and limit results
+      return Array.from(resultMap.values())
+        .sort((a, b) => b.combinedScore - a.combinedScore)
+        .slice(0, limit);
+        
+    } catch (error) {
+      logger.error({ error: error.message, query }, 'Hybrid search failed');
+      throw error;
+    }
+  },
+  
   // For backward compatibility
-  hybridSearch: (query, options) => search(query, { ...options, types: ['document'] }),
   fullTextSearch: (query, options) => search(query, { ...options, types: ['document'], threshold: 0 }),
   vectorSearch: (vector, options) => findSimilar(vector, { ...options, type: 'document' })
 };

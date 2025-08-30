@@ -107,7 +107,8 @@ class VectorStore {
       
       // Build the raw SQL query for hybrid search
       let sqlQuery;
-      const params = [query, queryEmbedding, threshold, limit];
+      // Parameters in order: [queryEmbedding, query, queryEmbedding, threshold, limit]
+      const params = [queryEmbedding, query, queryEmbedding, threshold, limit];
       
       switch (model) {
         case 'documents':
@@ -120,15 +121,17 @@ class VectorStore {
               category,
               publishedAt as "publishedAt",
               
-              -- Calculate relevance score (0.7 * vector_similarity + 0.3 * fulltext_relevance)
-              (0.7 * (embedding <=> ?::vector) + 
-               0.3 * (MATCH(title, content) AGAINST (?) * 0.1)
+              -- Calculate hybrid relevance score (0.7 * vector_similarity + 0.3 * fulltext_relevance)
+              -- Note: (1 - COSINE_DISTANCE) converts distance to similarity (0-1, higher is better)
+              (
+                0.7 * (1 - COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768)))) +
+                0.3 * (MATCH(title, content) AGAINST (?) IN NATURAL LANGUAGE MODE)
               ) as relevance
               
             FROM documents
             WHERE 
               -- Vector similarity threshold
-              (embedding <=> ?::vector) < ?
+              COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768))) < ?
               
               -- Optional: Add additional filters from options
               ${options.filters || ''}
@@ -148,14 +151,15 @@ class VectorStore {
               alertType as "alertType",
               startTime as "startTime",
               
-              -- Calculate relevance score
-              (0.7 * (embedding <=> ?::vector) + 
-               0.3 * (MATCH(title, description) AGAINST (?) * 0.1)
+              -- Calculate hybrid relevance score
+              (
+                0.7 * (1 - COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768)))) +
+                0.3 * (MATCH(title, description) AGAINST (?) IN NATURAL LANGUAGE MODE)
               ) as relevance
               
             FROM alerts
             WHERE 
-              (embedding <=> ?::vector) < ?
+              COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768))) < ?
               ${options.filters || ''}
             ORDER BY relevance DESC
             LIMIT ?
@@ -171,20 +175,22 @@ class VectorStore {
               address,
               city,
               state,
+              isEmergency as "isEmergency",
               
-              -- Calculate relevance score
-              (0.7 * (embedding <=> ?::vector) + 
-               0.3 * (MATCH(name, description, address, city, state) AGAINST (?) * 0.1)
+              -- Calculate hybrid relevance score with emergency boost
+              (
+                0.7 * (1 - COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768)))) +
+                0.3 * (MATCH(name, description, address, city, state) AGAINST (?) IN NATURAL LANGUAGE MODE)
               ) as relevance
               
             FROM resources
             WHERE 
               isActive = true
-              AND (embedding <=> ?::vector) < ?
+              AND COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768))) < ?
               ${options.filters || ''}
             ORDER BY 
               -- Boost emergency resources
-              CASE WHEN isEmergency THEN 1 ELSE 0 END DESC,
+              isEmergency DESC,
               relevance DESC
             LIMIT ?
           `;
@@ -194,15 +200,35 @@ class VectorStore {
           throw new Error(`Unsupported model type: ${model}`);
       }
 
-      // Execute the query
-      const results = await this.prisma.$queryRawUnsafe(sqlQuery, ...params);
-      
-      // Remove vector data if not requested
-      if (!includeVectors) {
-        results.forEach(doc => delete doc.embedding);
+      // Execute the query with error handling
+      let results;
+      try {
+        logger.debug({ model, query: query.substring(0, 100) }, 'Executing hybrid search');
+        results = await this.prisma.$queryRawUnsafe(sqlQuery, ...params);
+        
+        // Remove vector data if not requested
+        if (!includeVectors) {
+          results.forEach(doc => delete doc.embedding);
+        }
+        
+        logger.debug({ 
+          model, 
+          resultCount: results.length,
+          queryLength: query.length,
+          embeddingDimensions: queryEmbedding.length 
+        }, 'Hybrid search completed');
+        
+        return results;
+      } catch (error) {
+        logger.error({
+          error: error.message,
+          sql: sqlQuery,
+          params: params.map(p => Array.isArray(p) ? '[Vector]' : p),
+          model,
+          queryLength: query.length
+        }, 'Error executing hybrid search');
+        throw new Error(`Search failed: ${error.message}`);
       }
-      
-      return results;
       
     } catch (error) {
       logger.error({

@@ -35,14 +35,6 @@ async function insertAlert(normalizedAlert, kimiProcessed = null) {
     const document = await prisma.document.create({
       data: documentData
     });
-    
-    // Generate and store embeddings in the background
-    try {
-      await vectorStore.embedAndStore(document, 'documents');
-    } catch (error) {
-      logger.error({ error: error.message, documentId: document.id }, 'Failed to generate embeddings');
-      // Continue even if embedding fails - the document is still inserted
-    }
 
     // Create corresponding alert record if it's a real-time alert
     let alertRecord = null;
@@ -72,24 +64,47 @@ async function insertAlert(normalizedAlert, kimiProcessed = null) {
       });
     }
 
-    // Queue embedding generation task
-    await queueEmbeddingTask(document.id, text);
+    try {
+      // Queue embedding generation task
+      await queueEmbeddingTask(document.id, text);
+      
+      logger.info({
+        documentId: document.id,
+        alertId: alertRecord?.id,
+        source,
+        textLength: text.length
+      }, 'Alert inserted and queued for embedding');
 
-    logger.info({
-      documentId: document.id,
-      alertId: alertRecord?.id,
-      source,
-      textLength: text.length
-    }, 'Alert inserted successfully');
-
-    return {
-      document,
-      alert: alertRecord,
-      queued_for_embedding: true
-    };
+      return {
+        document,
+        alert: alertRecord,
+        queued_for_embedding: true
+      };
+    } catch (error) {
+      logger.error({ 
+        documentId: document.id,
+        error: error.message,
+        stack: error.stack 
+      }, 'Failed to queue embedding task');
+      
+      // Still return success since the document was inserted
+      return {
+        document,
+        alert: alertRecord,
+        queued_for_embedding: false,
+        error: 'Failed to queue embedding task'
+      };
+    }
 
   } catch (error) {
-    logger.error(error, 'Failed to insert alert');
+    logger.error({ 
+      error: error.message, 
+      stack: error.stack,
+      alertId: normalizedAlert.id,
+      source: normalizedAlert.source
+    }, 'Failed to insert alert');
+    
+    // Rethrow to allow calling function to handle
     throw error;
   }
 }
@@ -97,24 +112,52 @@ async function insertAlert(normalizedAlert, kimiProcessed = null) {
 /**
  * Queue embedding generation task
  */
+/**
+ * Queue embedding generation task
+ * @param {number} documentId - ID of the document to embed
+ * @param {string} text - Text content to generate embedding for
+ * @returns {Promise<boolean>} True if queued successfully
+ */
 async function queueEmbeddingTask(documentId, text) {
+  if (!documentId || !text) {
+    logger.warn({ documentId, hasText: !!text }, 'Invalid arguments for queueEmbeddingTask');
+    return false;
+  }
+
   try {
-    await prisma.workQueue.create({
+    const task = await prisma.workQueue.create({
       data: {
-        taskType: 'EMBED',
+        taskType: 'DOCUMENT_EMBED',  // More specific task type
         payload: {
-          document_id: documentId,
-          text: text,
-          embedding_type: 'text'
+          documentId: documentId,    // Consistent casing with other IDs
+          text: text.substring(0, 10000),  // Limit text length
+          model: 'jina-embeddings-v2-base-en',
+          dimensions: 768,
+          timestamp: new Date().toISOString()
         },
-        priority: 3 // Medium priority
+        priority: 3,  // Medium priority
+        status: 'PENDING',
+        retryCount: 0,
+        maxRetries: 3
       }
     });
 
-    logger.debug({ documentId }, 'Embedding task queued');
+    logger.debug({ 
+      taskId: task.id, 
+      documentId,
+      textLength: text.length 
+    }, 'Embedding task queued successfully');
+    
+    return true;
   } catch (error) {
-    logger.error(error, 'Failed to queue embedding task');
-    // Don't throw - embedding is not critical for initial insertion
+    logger.error({ 
+      error: error.message,
+      documentId,
+      stack: error.stack 
+    }, 'Failed to queue embedding task');
+    
+    // Rethrow to allow caller to handle the error
+    throw error;
   }
 }
 
