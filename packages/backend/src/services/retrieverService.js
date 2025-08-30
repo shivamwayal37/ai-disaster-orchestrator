@@ -70,8 +70,10 @@ async function retrieveAndGenerate(query, options = {}) {
     if (includeProtocols) {
       const protocolQuery = disasterType || extractedEntities?.disaster_type || query;
       searchPromises.push(
-        searchProtocols(protocolQuery, location, maxProtocols)
-          .then(results => ({ type: 'protocols', results }))
+        searchProtocols(protocolQuery, { 
+          limit: maxProtocols,
+          filters: location ? { location } : {}
+        }).then(results => ({ type: 'protocols', results }))
       );
     }
 

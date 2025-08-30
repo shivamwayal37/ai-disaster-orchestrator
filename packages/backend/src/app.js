@@ -3,6 +3,13 @@
  * Centralized API server with all routes and middleware
  */
 
+// Add BigInt JSON serialization support
+if (typeof BigInt !== 'undefined') {
+  BigInt.prototype.toJSON = function() {
+    return this.toString();
+  };
+}
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');

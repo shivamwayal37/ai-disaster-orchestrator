@@ -3,10 +3,15 @@
  * Handles text embedding generation using Jina Embeddings API
  */
 
-const pino = require('pino');
 const fetch = require('node-fetch');
 
-const logger = pino({ name: 'jina-embeddings' });
+// Simple console logger
+const logger = {
+  info: (message, ...args) => console.log(`[Jina] ${message}`, ...args),
+  error: (message, error) => console.error(`[Jina] ${message}`, error),
+  debug: (message, ...args) => console.log(`[Jina][DEBUG] ${message}`, ...args),
+  warn: (message, ...args) => console.warn(`[Jina][WARN] ${message}`, ...args)
+};
 
 // Supported models and their dimensions
 const MODEL_DIMENSIONS = {
@@ -19,16 +24,8 @@ const MODEL_DIMENSIONS = {
   'jina-embeddings-v4': 1024
 };
 
-// Default retry configuration
-const DEFAULT_RETRY_CONFIG = {
-  maxRetries: 3,
-  initialDelay: 1000, // 1 second
-  maxDelay: 10000,    // 10 seconds
-  factor: 2
-};
-
 class JinaEmbeddingsClient {
-  constructor(apiKey = process.env.JINA_API_KEY, model = 'jina-embeddings-v2-base-en') {
+  constructor(apiKey = process.env.JINA_API_KEY, model = 'jina-embeddings-v3') {
     if (!apiKey) {
       throw new Error('Jina API key is required');
     }
@@ -36,11 +33,10 @@ class JinaEmbeddingsClient {
     this.apiKey = apiKey;
     this.model = model;
     this.baseURL = 'https://api.jina.ai/v1';
-    this.dimensions = MODEL_DIMENSIONS[model] || 768;
-    this.retryConfig = { ...DEFAULT_RETRY_CONFIG };
+    this.dimensions = MODEL_DIMENSIONS[model] || 1024; // Default to v3 dimensions
     
     if (!this.apiKey) {
-      logger.warn('No Jina API key provided. Embedding generation will fail.');
+      logger.error('No Jina API key provided. Embedding generation will fail.');
     }
   }
 
@@ -50,51 +46,28 @@ class JinaEmbeddingsClient {
    * @returns {Promise<number[]|number[][]>} Single embedding vector or array of vectors
    */
   async generateEmbeddings(input) {
-    const texts = Array.isArray(input) ? input : [input];
     const isSingle = !Array.isArray(input);
+    const texts = isSingle ? [input] : input;
+    const maxRetries = 3;
+    const initialDelay = 1000; // 1 second initial delay
     
-    if (!this.apiKey) {
-      throw new Error('Jina API key is required');
-    }
-
-    let lastError;
-    let attempt = 0;
-    const { maxRetries, initialDelay, maxDelay, factor } = this.retryConfig;
-
-    while (attempt <= maxRetries) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        logger.debug({
-          attempt: attempt + 1,
-          textsCount: texts.length,
-          model: this.model,
-          dimensions: this.dimensions,
-          endpoint: '/embeddings'
-        }, 'Sending request to Jina API for embeddings');
-        
         const response = await fetch(`${this.baseURL}/embeddings`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${this.apiKey}`,
-            'Accept': 'application/json'
           },
           body: JSON.stringify({
             model: this.model,
             input: texts,
-            encoding_format: 'float'
           }),
-          timeout: 30000 // 30 second timeout
         });
 
         if (!response.ok) {
-          const errorBody = await response.text();
-          const error = new Error(`Jina API error: ${response.status} ${response.statusText} - ${errorBody}`);
-          
-          // Don't retry on 4xx errors (except 429 - Too Many Requests)
-          if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-            throw error;
-          }
-          throw error; // Will be caught by retry logic
+          const errorData = await response.text();
+          throw new Error(`Jina API error: ${response.status} - ${errorData}`);
         }
 
         const data = await response.json();
@@ -111,13 +84,9 @@ class JinaEmbeddingsClient {
           }
         }
 
-        // Verify all texts got embeddings
-        if (embeddings.some(emb => !emb)) {
-          throw new Error('Missing embeddings in Jina API response');
-        }
-
+        // Log successful generation
         logger.debug({
-          attempt: attempt + 1,
+          attempt,
           textsCount: texts.length,
           model: this.model,
           dimensions: this.dimensions
@@ -126,39 +95,25 @@ class JinaEmbeddingsClient {
         return isSingle ? embeddings[0] : embeddings;
 
       } catch (error) {
-        lastError = error;
-        attempt++;
-        
-        if (attempt > maxRetries) break;
-        
-        // Calculate delay with exponential backoff and jitter
-        const delay = Math.min(
-          initialDelay * Math.pow(factor, attempt - 1) * (0.5 + Math.random() * 0.5),
-          maxDelay
-        );
-        
-        logger.warn({
+        logger.error(`[JinaEmbedding] Error generating embedding (attempt ${attempt}/${maxRetries}): ${error.message}`, { 
+          stack: error.stack,
           attempt,
-          error: error.message,
-          retryIn: `${delay}ms`,
-          model: this.model,
-          status: error.response?.status
-        }, 'Embedding generation failed, retrying...');
+          maxRetries
+        });
         
-        await new Promise(resolve => setTimeout(resolve, delay));
+        if (attempt === maxRetries) {
+          throw error; // Re-throw on last attempt
+        }
+        
+        // Exponential backoff with jitter
+        const delay = Math.min(initialDelay * Math.pow(2, attempt - 1), 10000); // Max 10s delay
+        const jitter = Math.random() * 1000; // Add up to 1s jitter
+        await new Promise(resolve => setTimeout(resolve, delay + jitter));
       }
     }
     
-    // If we get here, all retries failed
-    logger.error({
-      error: lastError.message,
-      stack: lastError.stack,
-      model: this.model,
-      textsCount: texts.length,
-      attempts: attempt
-    }, 'All retry attempts failed for embedding generation');
-    
-    throw lastError;
+    // This should theoretically never be reached due to the throw in the catch block
+    throw new Error('Failed to generate embeddings after maximum retries');  
   }
 
   /**
@@ -184,9 +139,13 @@ function getEmbeddingsClient() {
   return embeddingsClient;
 }
 
+// For testing
+function _resetClient() {
+  embeddingsClient = null;
+}
+
 module.exports = {
   JinaEmbeddingsClient,
   getEmbeddingsClient,
-  // For testing
-  _resetClient: () => { embeddingsClient = null; }
+  _resetClient
 };

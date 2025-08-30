@@ -17,13 +17,30 @@ const embeddingsClient = getEmbeddingsClient();
  */
 async function fullTextSearch(query, { type = 'document', limit = 10, filters = {} }) {
   try {
+    // Base where clause with search conditions
+    const searchCondition = {
+      OR: [
+        { title: { contains: query } },
+        type === 'alert' 
+          ? { description: { contains: query } } 
+          : { content: { contains: query } }
+      ]
+    };
+
+    // Transform filters to match schema (e.g., status -> isActive for Alert model)
+    const transformedFilters = { ...filters };
+    if (type === 'alert' && 'status' in transformedFilters) {
+      transformedFilters.isActive = transformedFilters.status === 'ACTIVE';
+      delete transformedFilters.status;
+    }
+    
+    // Combine with any additional filters
+    const whereClause = Object.keys(transformedFilters).length > 0
+      ? { AND: [searchCondition, transformedFilters] }
+      : searchCondition;
+    
     return prisma[type].findMany({
-      where: {
-        AND: [
-          { OR: [{ title: { contains: query } }, { content: { contains: query } }] },
-          ...Object.entries(filters).map(([k, v]) => ({ [k]: v }))
-        ]
-      },
+      where: whereClause,
       take: limit
     });
   } catch (error) {
@@ -121,15 +138,23 @@ async function searchSimilarIncidents(query, options = {}) {
   });
 }
 
-// Simplified protocol search
+/**
+ * Search for disaster response protocols
+ * @param {string} disasterType - Type of disaster to search for
+ * @param {Object} options - Search options
+ * @returns {Promise<Array>} Array of matching protocols
+ */
 async function searchProtocols(disasterType, options = {}) {
+  const { limit = 5, filters = {}, ...otherOptions } = options;
+  
   return hybridSearch(disasterType, {
     type: 'document',
-    ...options,
+    limit,
+    ...otherOptions,
     filters: {
-      ...options.filters,
-      category: 'protocol',
-      // Add any additional protocol-specific filters
+      ...filters,
+      category: 'protocol'
+      // No status field in Document model, using only category filter
     }
   });
 }
@@ -171,8 +196,14 @@ module.exports = {
       vectorWeight = 0.7,
       textWeight = 0.3,
       limit = 10,
+      type = 'document',
       ...searchOptions
     } = options;
+
+    // If no query is provided, return empty results
+    if (!query) {
+      return [];
+    }
 
     // Normalize weights
     const totalWeight = vectorWeight + textWeight;
@@ -180,17 +211,30 @@ module.exports = {
     const normalizedTextWeight = textWeight / totalWeight;
 
     try {
+      // Prepare search options
+      const vectorSearchOptions = {
+        ...searchOptions,
+        type,
+        threshold: 0,
+        includeVectors: true
+      };
+
+      const textSearchOptions = {
+        ...searchOptions,
+        type,
+        threshold: 0,
+        includeVectors: false
+      };
+
       // Run both searches in parallel
       const [vectorResults, textResults] = await Promise.all([
-        search(query, { 
-          ...searchOptions, 
-          threshold: 0, 
-          includeVectors: true 
+        vectorSearch(query, vectorSearchOptions).catch(err => {
+          logger.warn({ error: err.message }, 'Vector search failed, falling back to text search');
+          return [];
         }),
-        search(query, { 
-          ...searchOptions, 
-          threshold: 0,
-          includeVectors: false
+        fullTextSearch(query, textSearchOptions).catch(err => {
+          logger.warn({ error: err.message }, 'Text search failed');
+          return [];
         })
       ]);
 
@@ -199,8 +243,8 @@ module.exports = {
 
       // Process vector results
       vectorResults.forEach((doc, index) => {
-        const score = (1 - (index / vectorResults.length)) * normalizedVectorWeight;
-        resultMap.set(`${doc.type}_${doc.id}`, {
+        const score = (1 - (index / Math.max(1, vectorResults.length))) * normalizedVectorWeight;
+        resultMap.set(`${doc.id}`, {
           ...doc,
           vectorScore: score,
           textScore: 0,
@@ -210,8 +254,8 @@ module.exports = {
 
       // Process text results and combine scores
       textResults.forEach((doc, index) => {
-        const key = `${doc.type}_${doc.id}`;
-        const score = (1 - (index / textResults.length)) * normalizedTextWeight;
+        const key = `${doc.id}`;
+        const score = (1 - (index / Math.max(1, textResults.length))) * normalizedTextWeight;
         
         if (resultMap.has(key)) {
           // Update existing result with text score
@@ -232,14 +276,15 @@ module.exports = {
         }
       });
 
-      // Convert map to array, sort by combined score, and limit results
+      // Convert map to array, sort by combined score, and take top results
       return Array.from(resultMap.values())
         .sort((a, b) => b.combinedScore - a.combinedScore)
         .slice(0, limit);
         
     } catch (error) {
-      logger.error({ error: error.message, query }, 'Hybrid search failed');
-      throw error;
+      logger.error({ error: error.message, query, options }, 'Hybrid search failed');
+      // Fall back to simple text search if hybrid fails
+      return fullTextSearch(query, { ...options, type, limit });
     }
   },
   

@@ -5,46 +5,89 @@
 
 const { prisma } = require('../db');
 const pino = require('pino');
-const { generateEmbeddings } = require('../services/kimiClient');
+const jinaEmbeddingService = require('../services/jinaEmbeddingService');
 
-const logger = pino({ name: 'embedding-worker' });
+const logger = pino({ name: 'jina-embedding-worker' });
 
 class EmbeddingWorker {
   constructor(options = {}) {
     this.batchSize = options.batchSize || 10;
     this.pollInterval = options.pollInterval || 5000; // 5 seconds
     this.isRunning = false;
-    this.embeddingDimensions = 1024; // Kimi's embedding dimensions
+    this.embeddingDimensions = 1024; // Jina v3 small model dimensions
+    this.maxRetries = 3;
+    this.retryDelay = 1000; // 1 second
   }
 
   /**
-   * Generate embeddings using Kimi API
-   * @param {string[]} texts - Array of text strings to generate embeddings for
-   * @returns {Promise<number[][]>} Array of embedding vectors
+   * Process a single embedding task
+   * @param {Object} task - The embedding task to process
+   * @returns {Promise<boolean>} True if successful, false otherwise
    */
-  async generateEmbeddings(texts) {
-    try {
-      logger.info({
-        textsCount: texts.length,
-        model: 'kimi-embedding-model'
-      }, 'Generating embeddings with Kimi API');
-      
-      const embeddings = await generateEmbeddings(texts);
-      
-      logger.info({
-        textsCount: texts.length,
-        embeddingDimensions: this.embeddingDimensions,
-        firstEmbeddingLength: embeddings[0]?.length || 0
-      }, 'Successfully generated embeddings');
-      
-      return embeddings;
-    } catch (error) {
-      logger.error({ 
-        error: error.message,
-        stack: error.stack 
-      }, 'Failed to generate embeddings with Kimi API');
-      throw error;
+  async processTask(task) {
+    let attempt = 0;
+    const { id, payload } = task;
+    const { documentId, text } = payload;
+
+    while (attempt < this.maxRetries) {
+      try {
+        // Generate embeddings using Jina API
+        const embedding = await jinaEmbeddingService.generateEmbedding(text);
+        
+        if (!embedding || embedding.length !== this.embeddingDimensions) {
+          throw new Error(`Invalid embedding dimensions: ${embedding ? embedding.length : 'null'}`);
+        }
+
+        // Update document with embedding
+        await prisma.document.update({
+          where: { id: documentId },
+          data: {
+            embedding,
+            embeddedAt: new Date(),
+            status: 'EMBEDDED',
+            embeddingModel: 'jina-embeddings-v3'
+          }
+        });
+
+        // Mark task as completed
+        await prisma.workQueue.update({
+          where: { id },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(),
+            attempts: { increment: 1 }
+          }
+        });
+
+        logger.info(`Processed embedding task ${id} for document ${documentId}`);
+        return true;
+      } catch (error) {
+        attempt++;
+        const isLastAttempt = attempt >= this.maxRetries;
+        
+        logger.error(`Error processing task ${task.id} (attempt ${attempt}/${this.maxRetries}):`, error);
+        
+        if (isLastAttempt) {
+          await prisma.workQueue.update({
+            where: { id: task.id },
+            data: {
+              status: 'FAILED',
+              error: error.message,
+              attempts: { increment: 1 },
+              lastAttemptedAt: new Date()
+            }
+          });
+          return false;
+        }
+        
+        // Wait before retry with exponential backoff
+        await new Promise(resolve => 
+          setTimeout(resolve, this.retryDelay * Math.pow(2, attempt - 1))
+        );
+      }
     }
+    
+    return false;
   }
 
   /**
