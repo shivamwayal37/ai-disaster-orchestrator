@@ -5,12 +5,25 @@
 
 const { prisma } = require('../db');
 const pino = require('pino');
-const { getVectorStore } = require('./vectorStore');
-const { getEmbeddingsClient } = require('./embeddingsClient');
+const { createClient } = require('redis');
+const { JinaEmbeddings } = require('langchain/embeddings/jina');
+const { HNSWLib } = require('langchain/vectorstores/hnswlib');
 
 const logger = pino({ name: 'search-service' });
-const vectorStore = getVectorStore();
-const embeddingsClient = getEmbeddingsClient();
+
+// Initialize Jina Embeddings
+const embeddings = new JinaEmbeddings({
+  apiKey: process.env.JINA_API_KEY,
+  model: 'jina-embeddings-v2-base-en'
+});
+
+// Initialize Redis client for caching
+const redisClient = createClient({
+  url: process.env.REDIS_URL || 'redis://localhost:6379'
+});
+
+redisClient.on('error', (err) => logger.error('Redis Client Error', err));
+redisClient.connect().catch(console.error);
 
 /**
  * Full-text search (fallback / baseline)
@@ -50,12 +63,39 @@ async function fullTextSearch(query, { type = 'document', limit = 10, filters = 
 }
 
 /**
- * Vector similarity search (via Jina + TiDB vector col)
+ * Vector similarity search using Jina embeddings
  */
 async function vectorSearch(query, { type = 'document', limit = 10, threshold = 0.7, filters = {} }) {
   try {
-    const [embedding] = await embeddingsClient.generateEmbeddings([query]);
-    return vectorStore.findSimilar(embedding, { model: type, limit, threshold, filters });
+    // Generate query embedding
+    const queryEmbedding = await embeddings.embedQuery(query);
+    
+    // Build the vector search query
+    const vectorQuery = {
+      vector: queryEmbedding,
+      similarityThreshold: threshold,
+      limit: limit,
+      ...(type === 'alert' ? { status: 'ACTIVE' } : {})
+    };
+
+    // Execute vector search in TiDB
+    const results = await prisma.$queryRaw`
+      SELECT 
+        id,
+        title,
+        content,
+        VECTOR_DISTANCE(embedding, ${JSON.stringify(queryEmbedding)}::JSON) as distance
+      FROM ${type}
+      WHERE VECTOR_DISTANCE(embedding, ${JSON.stringify(queryEmbedding)}::JSON) < ${1 - threshold}
+      ORDER BY distance
+      LIMIT ${limit}
+    `;
+
+    return results.map(r => ({
+      ...r,
+      score: 1 - r.distance,
+      content: r.content?.substring(0, 200) + (r.content?.length > 200 ? '...' : '')
+    }));
   } catch (error) {
     logger.error({ error: error.message, query }, 'Vector search failed');
     return [];
@@ -63,7 +103,7 @@ async function vectorSearch(query, { type = 'document', limit = 10, threshold = 
 }
 
 /**
- * Hybrid search = weighted merge of vector + keyword
+ * Hybrid search combining vector and full-text search
  */
 async function hybridSearch(query, {
   type = 'document',
@@ -72,13 +112,15 @@ async function hybridSearch(query, {
   textWeight = 0.3,
   filters = {}
 }) {
-  const [vecResults, txtResults] = await Promise.all([
-    vectorSearch(query, { type, limit, filters }),
-    fullTextSearch(query, { type, limit, filters })
-  ]);
+  try {
+    // Run both searches in parallel
+    const [vectorResults, textResults] = await Promise.all([
+      vectorSearch(query, { type, limit, filters }),
+      fullTextSearch(query, { type, limit, filters })
+    ]);
 
-  // Normalize weights
-  const total = vectorWeight + textWeight;
+    // Create a map to store combined results
+    const resultsMap = new Map();
   const vw = vectorWeight / total;
   const tw = textWeight / total;
 
