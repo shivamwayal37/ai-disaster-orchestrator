@@ -17,7 +17,7 @@ model Alert {
   severity    Int           @db.TinyInt
   location    String?       @db.VarChar(255)
   // Vector embedding for semantic search (768 dimensions for Jina base model)
-  embedding   Unsupported("VECTOR(768)")?
+  embedding   Unsupported("VECTOR(1024)")?
   latitude    Float?
   longitude   Float?
   startTime   DateTime      @map("start_time")
@@ -48,12 +48,12 @@ model Document {
   source         String?   @db.VarChar(100) @default("system")
   category       String    @db.VarChar(100)
   // Vector embedding for semantic search (768 dimensions for Jina models)
-  embedding      Unsupported("VECTOR(768)")?
+  embedding      Unsupported("VECTOR(1024)")?
   sourceUrl      String?   @map("source_url") @db.VarChar(500)
   mediaUrl       String?   @map("media_url") @db.VarChar(500)
   language       String    @default("en") @db.VarChar(10)
   // Optional image embeddings (same dimension as text for now)
-  imageEmbedding Unsupported("VECTOR(768)")? @map("image_embedding")
+  imageEmbedding Unsupported("VECTOR(1024)")? @map("image_embedding")
   wordCount      Int?      @map("word_count")
   readingTime    Int?      @map("reading_time")
   confidence     Float?    @db.Float
@@ -98,7 +98,7 @@ model Resource {
   disasterTypes  Json?    @map("disaster_types")
   lastUpdated    DateTime @default(now()) @map("last_updated")
   // Vector embedding for semantic search (768 dimensions for Jina models)
-  embedding      Unsupported("VECTOR(768)")?
+  embedding      Unsupported("VECTOR(1024)")?
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

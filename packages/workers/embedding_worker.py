@@ -115,11 +115,12 @@ class DatabaseService:
             WHERE id = %s
             """
             
+            # The mysql-connector-python handles Python lists for VECTOR types
             await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: cursor.execute(
                     query,
-                    (json.dumps(embedding), datetime.utcnow(), alert_id)
+                    (embedding, datetime.utcnow(), alert_id)
                 )
             )
             
@@ -137,288 +138,104 @@ class DatabaseService:
                 conn.close()
 
 class EmbeddingTask:
-    """Worker that processes alerts from Redis and generates embeddings"""
-    
-    def __init__(self, redis_url: str = None):
-        # Configuration
-        self.redis_url = (
-            redis_url or 
-            os.getenv("REDIS_URL") or 
-            "redis://127.0.0.1:6379"
-        )
+    """Processes embedding jobs from a Redis queue."""
+
+    def __init__(self, redis_url: str = None, queue_name: str = 'embedding-queue'):
+        self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
+        self.queue_name = queue_name
         self.redis = None
-        self.connected = False
-        
-        # Queue names
-        self.queues = {
-            "alerts": "disaster:alerts",
-            "embeddings": "disaster:embeddings",
-            "stats": "disaster:stats"
-        }
-        
-        # Initialize services
         self.embedding_service = JinaEmbeddingService()
         self.db_service = DatabaseService()
         self.batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "10"))
-        
-        # Stats
-        self.stats = {
-            'processed': 0,
-            'failed': 0,
-            'last_processed': None
-        }
 
-    async def process_alert(self, alert_data: Dict[str, Any]) -> bool:
-        """Process a single alert and generate embeddings
-        
-        Args:
-            alert_data: Alert data from Redis
-            
-        Returns:
-            bool: True if processing succeeded, False otherwise
-        """
-        alert_id = alert_data.get('id')
-        if not alert_id:
-            logger.error("Alert missing ID")
+    async def connect_redis(self):
+        """Connect to Redis with retry logic."""
+        for attempt in range(3):
+            try:
+                logger.info(f"Connecting to Redis at {self.redis_url}...")
+                self.redis = redis.from_url(self.redis_url, decode_responses=True)
+                await self.redis.ping()
+                logger.info("[OK] Connected to Redis")
+                return
+            except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as e:
+                logger.error(f"Redis connection failed (attempt {attempt + 1}): {e}")
+                if attempt < 2:
+                    await asyncio.sleep(5)
+        raise ConnectionError("Failed to connect to Redis after multiple attempts")
+
+    async def process_job(self, job_data: Dict[str, Any]) -> bool:
+        """Processes a single embedding job."""
+        alert_id = job_data.get('id')
+        content = job_data.get('content')
+
+        if not all([alert_id, content]):
+            logger.error(f"Invalid job format: {job_data}")
             return False
-            
+
         try:
-            # Generate embedding for alert content
-            content = alert_data.get('description', '')[:4000]  # Truncate to avoid token limits
-            if not content:
-                logger.warning(f"Alert {alert_id} has no content to embed")
-                return False
-            
-            # Get embedding from Jina API
-            logger.info(f"Generating embedding for alert {alert_id}")
             embedding = await self.embedding_service.get_embedding(content)
-            if not embedding:
-                logger.error(f"Failed to generate embedding for alert {alert_id}")
+            if not embedding or len(embedding) != 1024:
+                logger.error(f"❌ Failed to generate a valid embedding for alert {alert_id}")
                 return False
-            
-            # Update alert in database
-            success = await self.db_service.update_alert_embedding(alert_id, embedding)
-            if not success:
-                logger.error(f"Failed to update alert {alert_id} with embedding")
-                return False
-            
-            # Update stats
-            self.stats['processed'] += 1
-            self.stats['last_processed'] = datetime.utcnow()
-            
-            if self.redis and self.connected:
-                await self.redis.hincrby(self.queues['stats'], 'embeddings_generated', 1)
-            
-            logger.info(f"✅ Successfully processed alert {alert_id}")
-            return True
-            
-        except Exception as e:
-            self.stats['failed'] += 1
-            logger.error(f"❌ Error processing alert {alert_id}: {str(e)}")
-            logger.error(traceback.format_exc())
-            
-            # Update error stats
-            if self.redis and self.connected:
-                await self.redis.hincrby(self.queues['stats'], 'embedding_errors', 1)
-            
-            return False
-            
-            # Generate embedding for alert content
-            content = alert_data.get('content', '')
-            if not content:
-                logger.warning(f"Empty content for alert {alert_id}")
-                return False
-                
-            embedding = await self.embedding_service.get_embedding(content)
-            if not embedding:
-                logger.error(f"Failed to generate embedding for alert {alert_id}")
-                return False
-                
-            # Update alert with embedding
+
             success = await self.db_service.update_alert_embedding(alert_id, embedding)
             if success:
-                logger.info(f"Successfully processed alert {alert_id}")
+                logger.info(f"✅ Stored embedding for alert {alert_id}")
             else:
-                logger.error(f"Failed to update alert {alert_id} in database")
-                
+                logger.error(f"❌ Failed to store embedding for alert {alert_id} in database")
             return success
-            
         except Exception as e:
-            logger.error(f"Error processing alert {alert_id}: {str(e)}")
+            logger.error(f"❌ Failed to store embedding for alert {alert_id}: {e}")
             return False
 
-    async def connect_redis(self) -> bool:
-        """Connect to Redis with retry logic"""
-        max_retries = 3
-        retry_delay = 5
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Connecting to Redis at {self.redis_url} (attempt {attempt + 1}/{max_retries})")
-                self.redis = redis.Redis.from_url(
-                    self.redis_url,
-                    socket_connect_timeout=5,
-                    socket_timeout=5,
-                    decode_responses=True,
-                    retry_on_timeout=True
-                )
-                await self.redis.ping()
-                self.connected = True
-                logger.info("✅ Connected to Redis")
-                return True
-            except (ConnectionError, TimeoutError, redis.RedisError) as e:
-                logger.error(f"Failed to connect to Redis: {str(e)}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-        
-        logger.error("❌ Failed to connect to Redis after multiple attempts")
-        return False
+    async def run(self):
+        """Main worker loop to listen for and process jobs."""
+        await self.connect_redis()
+        logger.info(f"[START] Worker listening on queue: '{self.queue_name}' with batch size {self.batch_size}")
 
-    async def process_queue(self, queue_name: str) -> None:
-        """Process items from the specified queue with batch processing
-        
-        Args:
-            queue_name: Name of the queue to process (alerts or embeddings)
-        """
-        queue = self.queues.get(queue_name)
-        if not queue:
-            logger.error(f"❌ Unknown queue: {queue_name}")
-            return
-        
-        logger.info(f"🚀 Starting {queue_name} worker with batch size {self.batch_size}...")
-        
-        # Initialize Redis connection
-        if not await self.connect_redis():
-            return
-        
         try:
             while True:
                 try:
-                    # Process batch of alerts
-                    alerts = []
-                    for _ in range(self.batch_size):
-                        task_data = await self.redis.brpop(queue, timeout=1)
-                        if task_data and len(task_data) > 1:
-                            try:
-                                alert = json.loads(task_data[1])
-                                alerts.append(alert)
-                                logger.debug(f"Queued alert {alert.get('id')} for processing")
-                            except json.JSONDecodeError as e:
-                                logger.error(f"Invalid JSON in queue: {e}")
+                    # Blocking pop from the right of the list
+                    tasks = await self.redis.brpop(self.queue_name, timeout=5)
+                    if not tasks:
+                        continue
                     
-                    # Process alerts in parallel
-                    if alerts:
-                        tasks = [self.process_alert(alert) for alert in alerts]
-                        results = await asyncio.gather(*tasks, return_exceptions=True)
-                        
-                        # Log batch results
-                        success_count = sum(1 for r in results if r is True)
-                        if success_count > 0:
-                            logger.info(f"✅ Processed batch of {success_count}/{len(alerts)} alerts successfully")
-                        
-                        # Update stats
-                        if self.connected:
-                            await self.redis.hincrby(
-                                self.queues['stats'], 
-                                'alerts_processed', 
-                                success_count
-                            )
-                
-                except asyncio.CancelledError:
-                    logger.info("🛑 Worker shutdown requested")
-                    break
-                except Exception as e:
-                    logger.error(f"Error in worker: {e}")
-                    logger.error(traceback.format_exc())
-                    await asyncio.sleep(5)
-        
-        finally:
-            if self.redis:
-                await self.redis.close()
-                self.connected = False
-                        try:
-                            task = json.loads(task_data[1])
-                            logger.info(f"Processing task from {queue}: {task.get('id')}")
-
-                            if queue_name == "alerts":
-                                await self.process_alert(task)
-                            else:
-                                # Handle other queue types if needed
-                                logger.warning(f"Unsupported queue type: {queue_name}")
-
-                        except json.JSONDecodeError:
-                            logger.error(f"Invalid JSON in queue {queue}: {task_data[1]}")
-                        except Exception as e:
-                            logger.error(f"Error processing task: {str(e)}")
+                    job_str = tasks[1]
+                    job = json.loads(job_str)
+                    await self.process_job(job)
 
                 except asyncio.CancelledError:
-                    logger.info("Worker shutdown requested")
+                    logger.info("Worker shutdown requested.")
                     break
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON received from queue: {job_str}")
                 except Exception as e:
-                    logger.error(f"Error in worker: {e}")
-                    await asyncio.sleep(5)  # Prevent tight loop on errors
-
+                    logger.exception(f"Error in worker loop: {e}")
+                    await asyncio.sleep(5) # Prevent rapid-fire errors
         finally:
             if self.redis:
-                await self.redis.close()
-                logger.info("Redis connection closed")
+                await self.redis.aclose()
+            logger.info("Worker shutdown complete.")
 
 async def main():
-    """Main entry point for the embedding worker
-    
-    Example usage:
-        python embedding_worker.py --queue alerts --redis-url redis://localhost:6379
-    """
+    """Main entry point for the embedding worker."""
     parser = argparse.ArgumentParser(description='Embedding Worker for Disaster Alerts')
-    parser.add_argument('--queue', 
-                      type=str, 
-                      default='alerts',
-                      choices=['alerts', 'embeddings'],
-                      help='Queue name to process (alerts or embeddings)')
-    parser.add_argument('--redis-url', 
-                      type=str, 
-                      default=None,
-                      help='Redis connection URL (default: REDIS_URL from env)')
-    parser.add_argument('--batch-size',
-                      type=int,
-                      default=10,
-                      help='Number of alerts to process in each batch')
-    parser.add_argument('--log-level',
-                      type=str,
-                      default='INFO',
-                      choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                      help='Logging level')
-    
+    parser.add_argument('--queue', type=str, default='embedding-queue', help='Redis queue name to listen on.')
+    parser.add_argument('--redis-url', type=str, default=None, help='Redis connection URL.')
+    parser.add_argument('--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     args = parser.parse_args()
+
+    logging.getLogger().setLevel(args.log_level)
     
-    # Configure logging
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler('embedding_worker.log')
-        ]
-    )
-    
-    logger.info(f"🚀 Starting embedding worker for queue: {args.queue}")
-    logger.info(f"📊 Batch size: {args.batch_size}")
-    logger.info(f"🔍 Log level: {args.log_level}")
-    
-    worker = EmbeddingTask(redis_url=args.redis_url)
-    worker.batch_size = args.batch_size
-    
+    worker = EmbeddingTask(redis_url=args.redis_url, queue_name=args.queue)
     try:
-        await worker.process_queue(args.queue)
-    except asyncio.CancelledError:
-        logger.info("🛑 Worker shutdown requested")
+        await worker.run()
+    except (ConnectionError, asyncio.CancelledError) as e:
+        logger.info(f"Worker shutting down: {e}")
     except Exception as e:
-        logger.critical(f"💥 Fatal error in worker: {e}", exc_info=True)
+        logger.critical(f"[FATAL] Fatal error in worker: {e}", exc_info=True)
         sys.exit(1)
-    finally:
-        if worker.redis:
-            await worker.redis.close()
-        logger.info("👋 Worker shutdown complete")
 
 if __name__ == "__main__":
     asyncio.run(main())

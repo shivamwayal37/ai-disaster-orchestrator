@@ -1,6 +1,7 @@
 const express = require('express');
 const { prisma } = require('../db');
 const pino = require('pino');
+const { vectorSearch } = require('../services/searchService');
 
 const router = express.Router();
 const logger = pino({ name: 'search' });
@@ -43,43 +44,29 @@ router.get('/fulltext', async (req, res) => {
   }
 });
 
-// Vector similarity search endpoint (placeholder)
+// Vector similarity search endpoint
 router.get('/vector', async (req, res) => {
   try {
-    const { query, limit = 10 } = req.query;
-    
+    const { query, limit = 10, threshold = 0.7, type = 'alert' } = req.query;
+
     if (!query) {
       return res.status(400).json({ error: 'Query parameter is required' });
     }
 
-    // TODO: Generate embedding for query using OpenAI/local model
-    // For now, return documents that have embeddings
-    const documents = await prisma.document.findMany({
-      where: {
-        embedding: { not: null }
-      },
-      select: {
-        id: true,
-        title: true,
-        category: true,
-        content: true
-      },
-      take: parseInt(limit)
+    const results = await vectorSearch(query, { 
+        limit: parseInt(limit), 
+        threshold: parseFloat(threshold),
+        type
     });
 
-    logger.info({ query, results: documents.length }, 'Vector search completed (mock)');
-    
+    logger.info({ query, results: results.length }, 'Vector search completed');
+
     res.json({
       query,
-      results: documents.map(doc => ({
-        ...doc,
-        content_preview: doc.content.substring(0, 200),
-        similarity_score: Math.random() * 0.5 + 0.5 // Mock similarity score
-      })),
-      total: documents.length,
-      note: 'Vector search is currently using mock similarity scores'
+      results,
+      total: results.length
     });
-    
+
   } catch (error) {
     logger.error(error, 'Vector search failed');
     res.status(500).json({ error: 'Vector search failed' });

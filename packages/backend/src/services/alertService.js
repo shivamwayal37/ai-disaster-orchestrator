@@ -1,9 +1,20 @@
 const { PrismaClient } = require('@prisma/client');
 const { v4: uuidv4 } = require('uuid');
+const { createClient } = require('redis');
 const logger = require('../utils/logger');
-const { generateVectorEmbedding } = require('./embeddingService');
+const { searchSimilarIncidents } = require('./searchService');
 
 const prisma = new PrismaClient();
+
+// Initialize Redis client for queuing
+const redisClient = createClient({
+  url: process.env.REDIS_URL || 'redis://localhost:6379'
+});
+
+redisClient.on('error', (err) => logger.error('Redis Client Error', err));
+redisClient.connect().catch(console.error);
+
+const EMBEDDING_QUEUE_NAME = 'embedding-queue';
 
 class AlertService {
   constructor() {
@@ -95,79 +106,13 @@ class AlertService {
   }
 
   /**
-   * Search alerts with hybrid search (vector + full-text)
+   * Search alerts using the centralized search service
    */
   async searchAlerts(query, options = {}) {
-    const {
-      limit = 20,
-      offset = 0,
-      minScore = 0.5,
-      filters = {}
-    } = options;
-
     try {
-      // Generate embedding for the query
-      const queryEmbedding = await generateVectorEmbedding(query);
-      
-      // Build where clause for filters
-      const whereClause = this.buildWhereClause(filters);
-      
-      // Execute hybrid search
-      const [vectorResults, fullTextResults] = await Promise.all([
-        // Vector similarity search
-        prisma.$queryRaw`
-          SELECT id, 1 - (embedding <=> ${JSON.stringify(queryEmbedding)}::vector) as similarity
-          FROM "Alert"
-          WHERE embedding IS NOT NULL
-          AND ${whereClause}
-          ORDER BY similarity DESC
-          LIMIT ${limit}
-          OFFSET ${offset}
-        `,
-        
-        // Full-text search as fallback
-        prisma.alert.findMany({
-          where: {
-            ...whereClause,
-            OR: [
-              { description: { contains: query, mode: 'insensitive' } },
-              { location: { contains: query, mode: 'insensitive' } },
-              { type: { contains: query, mode: 'insensitive' } }
-            ]
-          },
-          take: limit,
-          skip: offset,
-          orderBy: { createdAt: 'desc' }
-        })
-      ]);
-
-      // Combine and deduplicate results
-      const combinedResults = this.combineSearchResults(
-        vectorResults,
-        fullTextResults,
-        minScore
-      );
-
-      // Get full alert details for the combined results
-      const alertIds = combinedResults.map(r => r.id);
-      const alerts = await prisma.alert.findMany({
-        where: { id: { in: alertIds } },
-        include: { _count: true }
-      });
-
-      // Map back scores and sort
-      const scoredAlerts = alerts.map(alert => ({
-        ...alert,
-        score: combinedResults.find(r => r.id === alert.id)?.score || 0
-      })).sort((a, b) => b.score - a.score);
-
-      return {
-        results: scoredAlerts,
-        total: scoredAlerts.length,
-        vectorResults: vectorResults.length,
-        fullTextResults: fullTextResults.length
-      };
-      
+      // Delegate to the search service
+      const results = await searchSimilarIncidents(query, options);
+      return results;
     } catch (error) {
       this.logger.error({ error, query }, 'Search failed');
       throw new Error(`Search failed: ${error.message}`);
@@ -356,34 +301,46 @@ class AlertService {
   }
 
   /**
-   * Helper: Queue alert for embedding generation
+   * Queues an alert for asynchronous embedding generation using Redis.
+   * @param {string} alertId - The ID of the alert.
+   * @param {string} text - The text content to be embedded.
    */
   async queueForEmbedding(alertId, text) {
     try {
-      // In a real implementation, this would add to a message queue
-      // For now, we'll directly call the embedding service
-      const embedding = await generateVectorEmbedding(text);
-      
+      const job = {
+        alertId,
+        text,
+        timestamp: Date.now()
+      };
+
+      // Push the job to the Redis list (queue)
+      await redisClient.lPush(EMBEDDING_QUEUE_NAME, JSON.stringify(job));
+
+      this.logger.info({ alertId }, 'Alert queued for embedding');
+
+      // Update alert status to 'QUEUED'
       await prisma.alert.update({
         where: { id: alertId },
         data: { 
-          embedding: embedding,
-          status: 'PROCESSED'
+          status: 'QUEUED'
         }
       });
-      
+
     } catch (error) {
-      this.logger.error({ error, alertId }, 'Failed to generate embedding');
-      // Don't fail the whole operation if embedding fails
+      this.logger.error({ error, alertId }, 'Failed to queue alert for embedding');
+      // Optionally update the alert status to 'ERROR' if queuing fails
       await prisma.alert.update({
         where: { id: alertId },
-        data: { 
+        data: {
           status: 'ERROR',
           metadata: {
-            error: 'Failed to generate embedding',
+            ...((await prisma.alert.findUnique({ where: { id: alertId } }))?.metadata || {}),
+            error: 'Failed to queue for embedding',
             errorDetails: error.message
           }
         }
+      }).catch(updateError => {
+        this.logger.error({ error: updateError, alertId }, 'Failed to update alert status after queuing error');
       });
     }
   }
@@ -423,39 +380,6 @@ class AlertService {
     return where;
   }
 
-  /**
-   * Helper: Combine vector and full-text search results
-   */
-  combineSearchResults(vectorResults, fullTextResults, minScore = 0.5) {
-    const combined = new Map();
-    
-    // Add vector results with scores
-    vectorResults.forEach(item => {
-      if (item.similarity >= minScore) {
-        combined.set(item.id, {
-          id: item.id,
-          score: item.similarity,
-          source: 'vector'
-        });
-      }
-    });
-    
-    // Add full-text results with lower weight
-    fullTextResults.forEach(alert => {
-      const existing = combined.get(alert.id) || { score: 0 };
-      // Boost score for full-text matches that weren't in vector results
-      const boost = existing.source === 'vector' ? 0.2 : 0.8;
-      combined.set(alert.id, {
-        id: alert.id,
-        score: Math.max(existing.score, minScore * boost),
-        source: existing.source || 'fulltext'
-      });
-    });
-    
-    // Convert to array and sort by score
-    return Array.from(combined.values())
-      .sort((a, b) => b.score - a.score);
-  }
 
   /**
    * Helper: Generate time series data for charts

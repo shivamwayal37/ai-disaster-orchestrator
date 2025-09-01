@@ -10,7 +10,7 @@ import time
 import uuid
 import asyncio
 import random
-import redis.asyncio as redis
+import redis.asyncio as aioredis
 import mysql.connector
 from mysql.connector import Error, pooling
 import logging
@@ -190,66 +190,63 @@ class TiDBConnection:
             logger.error(f"Failed to insert alert {alert_id}: {e}")
             return False
     
-    def update_alert_embedding(self, alert_id: str, embedding: List[float]) -> bool:
-        """Update alert with generated embedding"""
+    def insert_document_embedding(self, alert_id: str, title: str, content: str, embedding: List[float], category: str) -> bool:
+        """Insert a new document with its embedding, linked to an alert."""
         try:
             if not self._ensure_connection():
                 logger.error("Failed to establish database connection")
                 return False
-                
-            cursor = self.connection.cursor()
-            
-            # Convert embedding to TiDB VECTOR format
+
+            cursor = self.connection.cursor(dictionary=True)
+
+            # Find the numeric alert ID from the alerts table using alert_uid
+            cursor.execute("SELECT id FROM alerts WHERE alert_uid = %s", (alert_id,))
+            result = cursor.fetchone()
+            if not result:
+                logger.error(f"Could not find alert with alert_uid {alert_id} to link document.")
+                cursor.close()
+                return False
+            numeric_alert_id = result['id']
+
+            # Convert embedding to TiDB VECTOR format string
             embedding_str = f"[{','.join(map(str, embedding))}]"
-            
-            update_query = """
-            UPDATE alerts 
-            SET embedding = %s, embedding_status = 'completed', processed_at = NOW()
-            WHERE alert_uid = %s
+
+            now = datetime.now()
+            insert_query = """
+            INSERT INTO documents (title, content, category, alert_id, embedding, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """
             
-            cursor.execute(update_query, (embedding_str, alert_id))
+            values = (
+                title,
+                content,
+                category,  # Use the passed category
+                numeric_alert_id,
+                embedding_str,
+                now,
+                now
+            )
+
+            cursor.execute(insert_query, values)
             self.connection.commit()
             cursor.close()
-            
-            logger.info(f"Alert {alert_id} updated with embedding")
+
+            logger.info(f"Document for alert {alert_id} created with embedding.")
             return True
-            
+
         except Error as e:
-            logger.error(f"Failed to update alert {alert_id} with embedding: {e}")
+            logger.error(f"Failed to insert document for alert {alert_id}: {e}")
             return False
-    
-    def mark_embedding_failed(self, alert_id: str, error_msg: str) -> bool:
-        """Mark alert embedding as failed"""
-        try:
-            if not self._ensure_connection():
-                logger.error("Failed to establish database connection")
-                return False
-                
-            cursor = self.connection.cursor()
-            
-            update_query = """
-            UPDATE alerts 
-            SET embedding_status = 'failed', processed_at = NOW()
-            WHERE alert_uid = %s
-            """
-            
-            cursor.execute(update_query, (alert_id,))
-            self.connection.commit()
-            cursor.close()
-            
-            logger.warning(f"Alert {alert_id} marked as embedding failed: {error_msg}")
-            
-        except Error as e:
-            logger.error(f"Failed to mark alert {alert_id} as failed: {e}")
 
 class RedisQueue:
     """Redis-based message queue for alert processing"""
     
-    def __init__(self, redis_url: str):
+    def __init__(self, redis_url: str, alert_queue: str = "alerts_queue", embedding_queue: str = "embedding_queue"):
         self.redis_url = redis_url
         self.redis = None
         self.connected = False
+        self.alert_queue = alert_queue
+        self.embedding_queue = embedding_queue
         
     async def connect(self) -> bool:
         """Connect to Redis with retry logic"""
@@ -258,12 +255,11 @@ class RedisQueue:
         
         for attempt in range(max_retries):
             try:
-                self.redis = redis.Redis.from_url(
+                self.redis = aioredis.from_url(
                     self.redis_url,
                     decode_responses=True,
                     socket_connect_timeout=5,
-                    socket_timeout=5,
-                    retry_on_timeout=True
+                    socket_timeout=5
                 )
                 await self.redis.ping()
                 self.connected = True
@@ -289,10 +285,10 @@ class RedisQueue:
         try:
             # Check if key exists and its type
             key_type = await self.redis.type(queue_name)
-            if key_type == b'none':
+            if key_type == 'none':
                 logger.debug(f"Key '{queue_name}' does not exist, will be created")
-            elif key_type != b'list':
-                logger.warning(f"Key '{queue_name}' exists with type '{key_type.decode()}'. Deleting it...")
+            elif key_type != 'list':
+                logger.warning(f"Key '{queue_name}' exists with type '{key_type}'. Deleting it...")
                 await self.redis.delete(queue_name)
         except Exception as e:
             logger.error(f"Error checking queue {queue_name}: {e}")
@@ -321,7 +317,7 @@ class RedisQueue:
             alert_data['status'] = 'pending'
             
             # Add to alerts queue
-            await self.redis.lpush("alerts_queue", json.dumps(alert_data))
+            await self.redis.lpush(self.alert_queue, json.dumps(alert_data))
             logger.info(f"📤 Published alert {alert_id} to alerts_queue")
             
             # Update stats
@@ -334,18 +330,18 @@ class RedisQueue:
             logger.error(traceback.format_exc())
             raise
     
-    async def publish_embedding_task(self, alert_id: str, content: str):
+    async def publish_embedding_task(self, alert_id: str, content: str, alert_type: Optional[str] = None):
         """Publish embedding task to embedding queue"""
         try:
-            await self._ensure_queue_exists("embedding_queue")
+            await self._ensure_queue_exists(self.embedding_queue)
             task_data = {
-                "alert_id": alert_id,
+                "id": alert_id,
                 "content": content,
-                "timestamp": time.time()
+                "alert_type": alert_type
             }
             message = json.dumps(task_data)
             await self.redis.lpush(self.embedding_queue, message)
-            logger.info(f"Embedding task published for alert {alert_id}")
+            logger.info(f"📨 Sent embedding task for {alert_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to publish embedding task: {e}")
@@ -518,8 +514,19 @@ class IngestWorker:
             'start_time': time.time()
         }
     
+    async def ensure_redis_connection(self):
+        """Ensure Redis connection is established"""
+        if not self.queue.connected:
+            if not await self.queue.connect():
+                logger.error("Cannot proceed without Redis connection")
+                return False
+        return True
+            
     async def process_alert(self, alert_data: Dict[str, Any]):
         """Process incoming alert: store in DB and queue for embedding"""
+        if not await self.ensure_redis_connection():
+            return
+            
         try:
             # Ensure alert_data is a dictionary
             if isinstance(alert_data, str):
@@ -561,9 +568,14 @@ class IngestWorker:
                 self.stats['failed'] += 1
                 return
             
-            # Queue for embedding if content exists
-            if 'content' in alert_data and alert_data['content']:
-                await self.queue.publish_embedding_task(alert_id, alert_data['content'])
+            # Construct content for embedding if it's not explicitly provided
+            content_to_embed = alert_payload.content
+            if not content_to_embed:
+                content_to_embed = f"{alert_payload.alert_type or 'Alert'} in {alert_payload.location or 'unknown location'}."
+                logger.debug(f"Constructed content for embedding: {content_to_embed}")
+
+            # Queue for embedding, including alert_type for context
+            await self.queue.publish_embedding_task(alert_id, content_to_embed, alert_payload.alert_type)
             
             self.stats['processed'] += 1
             logger.info(f"Processed alert {alert_id}")
@@ -575,37 +587,39 @@ class IngestWorker:
             traceback.print_exc()
     
     async def process_embedding_task(self, task_data: Dict[str, Any]):
-        """Process embedding task: generate embedding and update DB"""
+        """Process embedding task: generate embedding and store as a new document."""
         try:
-            alert_id = task_data['alert_id']
+            alert_id = task_data['id']
             content = task_data['content']
-            
+            alert_type = task_data.get('alert_type', 'Alert')
+
             logger.info(f"Generating embedding for alert {alert_id}")
-            
-            # Generate embedding using Jina API
+
             embedding = await self.embedding_service.generate_embedding(content)
-            
+
             if embedding:
-                # Update alert with embedding
-                if self.db.update_alert_embedding(alert_id, embedding):
+                title = f"Embedding for {alert_type}: {alert_id}"
+                if self.db.insert_document_embedding(alert_id, title, content, embedding, alert_type):
                     self.stats['embedded'] += 1
-                    logger.info(f"Alert {alert_id} embedding completed")
+                    logger.info(f"Alert {alert_id} embedding stored successfully.")
                 else:
-                    self.db.mark_embedding_failed(alert_id, "Database update failed")
                     self.stats['failed'] += 1
+                    logger.error(f"Failed to store embedding for alert {alert_id} in the database.")
             else:
-                self.db.mark_embedding_failed(alert_id, "Embedding generation failed")
                 self.stats['failed'] += 1
-                
+                logger.error(f"Embedding generation failed for alert {alert_id}")
+
         except Exception as e:
-            logger.error(f"Embedding task failed: {e}")
+            logger.error(f"Embedding task failed for alert {alert_id}: {e}", exc_info=True)
             self.stats['failed'] += 1
             traceback.print_exc()
     
     async def run_alert_processor(self):
         """Run alert processing worker"""
         logger.info("Starting alert processor worker")
-        
+        if not await self.ensure_redis_connection():
+            return
+            
         try:
             # Connect to services
             if not self.db.connect():
@@ -629,7 +643,9 @@ class IngestWorker:
     async def run_embedding_processor(self):
         """Run embedding processing worker"""
         logger.info("Starting embedding processor worker")
-        
+        if not await self.ensure_redis_connection():
+            return
+            
         try:
             # Connect to services
             if not self.db.connect():
