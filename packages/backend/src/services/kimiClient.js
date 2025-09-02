@@ -2,14 +2,15 @@
  * Kimi API Client
  * Handles text summarization, entity extraction, and embeddings
  */
-
+require('dotenv').config();
 const pino = require('pino');
 const logger = pino({ name: 'kimi-client' });
+
 
 class KimiClient {
   constructor(apiKey) {
     this.apiKey = apiKey || process.env.KIMI_API_KEY;
-    this.baseURL = 'https://api.moonshot.ai/v1'; // Updated base URL
+    this.baseURL = 'https://api.moonshot.cn/v1'; // Correct Moonshot base URL
     this.model = 'moonshot-v1-8k';
     
     // Log API key info (without exposing the full key)
@@ -17,8 +18,17 @@ class KimiClient {
       const keyPrefix = this.apiKey.substring(0, 4);
       const keySuffix = this.apiKey.length > 8 ? '...' + this.apiKey.substring(this.apiKey.length - 4) : '';
       logger.info(`Initialized Kimi client with API key: ${keyPrefix}${keySuffix}`);
+      
+      // Log environment variables that might affect the key
+      console.log('Environment variables loaded:', {
+        NODE_ENV: process.env.NODE_ENV,
+        KIMI_API_KEY: process.env.KIMI_API_KEY ? '***' + process.env.KIMI_API_KEY.slice(-4) : 'Not set',
+        KEY_LENGTH: process.env.KIMI_API_KEY ? process.env.KIMI_API_KEY.length : 0,
+        KEY_STARTS_WITH: process.env.KIMI_API_KEY ? process.env.KIMI_API_KEY.substring(0, 4) : 'N/A'
+      });
     } else {
       logger.warn('No API key provided for Kimi client');
+      console.error('KIMI_API_KEY is not set in environment variables');
     }
   }
 
@@ -27,6 +37,18 @@ class KimiClient {
     
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
+        // Log detailed request info
+        console.log('Making request to Kimi API:', {
+          endpoint: `${this.baseURL}${endpoint}`,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey?.substring(0, 4)}...${this.apiKey?.substring(-4)}`,
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify(data, null, 2).substring(0, 200) + '...' // Truncate long bodies
+        });
+        
         const response = await fetch(`${this.baseURL}${endpoint}`, {
           method: 'POST',
           headers: {

@@ -221,7 +221,22 @@ class Validator {
   }
 }
 
+const sanitizeQuery = (query) => {
+  if (typeof query !== 'string') {
+    return '';
+  }
+  // Basic sanitization: trim whitespace and remove excessive spaces
+  return query.trim().replace(/\s+/g, ' ');
+};
+
+const validateResponse = (response) => {
+  // Placeholder for AI response validation logic
+  return response;
+};
+
 module.exports = {
   Validator,
+  sanitizeQuery,
+  validateResponse,
   ...require('express-validator')
 };

@@ -11,6 +11,9 @@ if (typeof BigInt !== 'undefined') {
 }
 
 require('dotenv').config();
+
+// Debug: Check if the API key is loaded
+console.log('Kimi API Key Loaded:', process.env.KIMI_API_KEY ? `${process.env.KIMI_API_KEY.substring(0, 4)}...` : undefined);
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -23,6 +26,7 @@ const searchRoutes = require('./routes/search');
 const retrieveRoutes = require('./routes/retrieve');
 const respondRoutes = require('./routes/respond');
 const incidentsRoutes = require('./routes/incidents');
+const orchestratorRoutes = require('./routes/orchestratorRoutes');
 const { ActionOrchestrator } = require('./services/actionServices');
 
 const app = express();
@@ -70,6 +74,7 @@ app.use('/api/search', searchRoutes);
 app.use('/api/incidents', incidentsRoutes);
 app.use('/api/retrieve', retrieveRoutes);
 app.use('/api/respond', respondRoutes);
+app.use('/api/orchestrate', orchestratorRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -80,10 +85,6 @@ app.get('/health', (req, res) => {
     environment: process.env.NODE_ENV || 'development'
   });
 });
-
-// API routes
-app.use('/api/retrieve', retrieveRoutes);
-app.use('/api/respond', respondRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -97,7 +98,8 @@ app.get('/', (req, res) => {
       search: '/api/retrieve/search',
       disaster: '/api/retrieve/disaster',
       stats: '/api/retrieve/stats',
-      test: '/api/retrieve/test'
+      test: '/api/retrieve/test',
+      orchestrate: '/api/orchestrate'
     },
     documentation: 'See README.md for API documentation'
   });

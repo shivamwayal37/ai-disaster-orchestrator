@@ -1,6 +1,6 @@
 generator client {
   provider        = "prisma-client-js"
-  previewFeatures = ["fullTextSearch", "fullTextIndex"]
+  previewFeatures = ["fullTextIndex", "fullTextSearch"]
 }
 
 datasource db {
@@ -9,68 +9,65 @@ datasource db {
 }
 
 model Alert {
-  id          BigInt        @id @default(autoincrement())
-  source      String        @db.VarChar(100)
-  alertType   String        @map("alert_type") @db.VarChar(100)
-  title       String        @db.VarChar(255)
-  description String        @db.Text
-  severity    Int           @db.TinyInt
-  location    String?       @db.VarChar(255)
-  // Vector embedding for semantic search (768 dimensions for Jina base model)
-  embedding   Unsupported("VECTOR(1024)")?
+  id          BigInt                       @id @default(autoincrement())
+  source      String                       @db.VarChar(100)
+  alertType   String                       @map("alert_type") @db.VarChar(100)
+  title       String                       @db.VarChar(255)
+  description String                       @db.Text
+  severity    Int                          @db.TinyInt
+  location    String?                      @db.VarChar(255)
   latitude    Float?
   longitude   Float?
-  startTime   DateTime      @map("start_time")
-  endTime     DateTime?     @map("end_time")
-  isActive    Boolean       @default(true) @map("is_active")
-  rawData     Json?         @map("raw_data")
-  createdAt   DateTime      @default(now()) @map("created_at")
-  updatedAt   DateTime      @updatedAt @map("updated_at")
+  startTime   DateTime                     @map("start_time")
+  endTime     DateTime?                    @map("end_time")
+  isActive    Boolean                      @default(true) @map("is_active")
+  rawData     Json?                        @map("raw_data")
+  createdAt   DateTime                     @default(now()) @map("created_at")
+  updatedAt   DateTime                     @updatedAt @map("updated_at")
+  alert_uid   String                       @db.VarChar(64)
+  embedding   Unsupported("vector(1024)")?
   documents   Document[]
-  actions     ActionAudit[]
 
-  // Full-text search on title and description
-  @@fulltext([title, description])
-  // Note: Vector indexes must be added via SQL migration
-  // Example: CREATE VECTOR INDEX ON alerts(embedding) USING HNSW;
   @@index([alertType])
   @@index([severity])
   @@index([latitude, longitude])
   @@index([isActive, createdAt])
+  @@index([embedding], map: "idx_alerts_embedding")
   @@map("alerts")
 }
 
 model Document {
-  id             BigInt    @id @default(autoincrement())
-  title          String    @db.VarChar(255)
-  content        String    @db.Text
-  summary        String?   @db.Text
-  source         String?   @db.VarChar(100) @default("system")
-  category       String    @db.VarChar(100)
-  // Vector embedding for semantic search (768 dimensions for Jina models)
-  embedding      Unsupported("VECTOR(1024)")?
-  sourceUrl      String?   @map("source_url") @db.VarChar(500)
-  mediaUrl       String?   @map("media_url") @db.VarChar(500)
-  language       String    @default("en") @db.VarChar(10)
-  // Optional image embeddings (same dimension as text for now)
-  imageEmbedding Unsupported("VECTOR(1024)")? @map("image_embedding")
-  wordCount      Int?      @map("word_count")
-  readingTime    Int?      @map("reading_time")
-  confidence     Float?    @db.Float
-  publishedAt    DateTime? @map("published_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-  alertId        BigInt?   @map("alert_id")
-  alert          Alert?    @relation(fields: [alertId], references: [id])
+  id                  BigInt                       @id @default(autoincrement())
+  title               String                       @db.VarChar(255)
+  content             String                       @db.Text
+  summary             String?                      @db.Text
+  location            String?                      @db.VarChar(255)
+  category            String                       @db.VarChar(100)
+  sourceUrl           String?                      @map("source_url") @db.VarChar(500)
+  mediaUrl            String?                      @map("media_url") @db.VarChar(500)
+  language            String                       @default("en") @db.VarChar(10)
+  embedding           Bytes?
+  imageEmbedding      Bytes?                       @map("image_embedding")
+  wordCount           Int?                         @map("word_count")
+  readingTime         Int?                         @map("reading_time")
+  confidence          Float?                       @db.Float
+  publishedAt         DateTime?                    @map("published_at")
+  createdAt           DateTime                     @default(now()) @map("created_at")
+  updatedAt           DateTime                     @updatedAt @map("updated_at")
+  alertId             BigInt?                      @map("alert_id")
+  embedding_vec       Unsupported("vector(1024)")?
+  image_embedding_vec Unsupported("vector(1024)")?
+  type                String?                      @db.VarChar(255)
+  alert               Alert?                       @relation(fields: [alertId], references: [id])
 
-  // Hybrid search: full-text + vector similarity
-  // Note: Vector indexes must be added via SQL migration
-  // Example: CREATE VECTOR INDEX ON documents(embedding) USING HNSW;
-  @@fulltext([title, content])
   @@index([category])
   @@index([publishedAt])
   @@index([confidence])
   @@index([alertId], map: "documents_alert_id_fkey")
+  @@index([content(length: 191)])
+  @@index([title])
+  @@index([embedding_vec], map: "idx_documents_embedding_vec")
+  @@index([image_embedding_vec], map: "idx_documents_image_embedding_vec")
   @@map("documents")
 }
 
@@ -97,25 +94,23 @@ model Resource {
   services       Json?
   disasterTypes  Json?    @map("disaster_types")
   lastUpdated    DateTime @default(now()) @map("last_updated")
-  // Vector embedding for semantic search (768 dimensions for Jina models)
-  embedding      Unsupported("VECTOR(1024)")?
+  embedding      Bytes?
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  // Hybrid search: full-text + vector similarity
-  // Note: Vector indexes must be added via SQL migration
-  // Example: CREATE VECTOR INDEX ON resources(embedding) USING HNSW;
-  @@fulltext([name, description, address, city, state])
   @@index([type])
   @@index([latitude, longitude])
   @@index([isActive, isEmergency])
+  @@index([address])
+  @@index([city, state])
+  @@index([description(length: 191)])
+  @@index([name])
   @@map("resources")
 }
 
 model ActionAudit {
   id        BigInt   @id @default(autoincrement())
   alertId   BigInt?  @map("alert_id")
-  alert     Alert?   @relation(fields: [alertId], references: [id], onDelete: Cascade)
   action    String   @db.VarChar(100)
   payload   Json?
   status    String   @db.VarChar(50)
