@@ -42,12 +42,27 @@ function initializeRedisClient() {
 /**
  * Create cache key from parameters
  */
-function createCacheKey(prefix, params) {
-  // Create a deterministic hash of the parameters
-  const paramString = JSON.stringify(params, Object.keys(params).sort());
-  const hash = crypto.createHash('sha256').update(paramString).digest('hex').substring(0, 16);
-  
-  return `${prefix}:${hash}`;
+function createCacheKey(params) {
+  try {
+    const { query, type, options } = params;
+    const normalizedQuery = typeof query === "string"
+      ? query.trim().toLowerCase()
+      : JSON.stringify(query || {});
+
+    const normalizedType = type || "default";
+
+    const safeOptions = options && typeof options === "object" ? options : {};
+    const sortedKeys = Object.keys(safeOptions).sort();
+    const normalizedOptions = sortedKeys
+      .map(k => `${k}:${JSON.stringify(safeOptions[k])}`)
+      .join("|");
+
+    const keyString = `${normalizedType}::${normalizedQuery}::${normalizedOptions}`;
+    return crypto.createHash('sha256').update(keyString).digest('hex').substring(0, 16);
+
+  } catch (err) {
+    return `fallback::${Date.now()}`;
+  }
 }
 
 /**

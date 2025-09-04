@@ -6,138 +6,17 @@
 const pino = require('pino');
 const { validateResponse, sanitizeQuery } = require('../utils/validation');
 const { createCacheKey, getCachedResponse, setCachedResponse } = require('../utils/cache');
+const { EnhancedErrorHandler } = require('./errorHandler');
+const { aiClient } = require('./aiClient');
 
 const logger = pino({ name: 'response-orchestrator' });
 
-// AI Client Factory - supports multiple providers
-class AIClientFactory {
-  static create(provider = 'moonshot') {
-    switch (provider) {
-      case 'moonshot':
-        return new MoonshotAIClient();
-      case 'openai':
-        return new OpenAIClient();
-      default:
-        throw new Error(`Unsupported AI provider: ${provider}`);
-    }
-  }
-}
-
-// Moonshot AI Client (replaces Kimi)
-class MoonshotAIClient {
-  constructor() {
-    this.apiKey = process.env.KIMI_API_KEY;
-    this.baseURL = 'https://api.moonshot.ai/v1';
-    this.model = 'moonshot-v1-8k';
-
-    if (!this.apiKey) {
-      throw new Error('MOONSHOT_API_KEY is required');
-    }
-  }
-
-  async generateResponse(prompt, options = {}) {
-    const { maxTokens = 1000, temperature = 0.3 } = options;
-
-    try {
-      const response = await fetch(`${this.baseURL}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a disaster response AI coordinator. Provide clear, actionable guidance in valid JSON format only.'
-            },
-            {
-              role: 'user',
-              content: prompt
-            }
-          ],
-          max_tokens: maxTokens,
-          temperature,
-          response_format: { type: 'json_object' }
-        })
-      });
-
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Moonshot API error ${response.status}: ${error}`);
-      }
-
-      const result = await response.json();
-      return result.choices[0].message.content;
-
-    } catch (error) {
-      logger.error({ error: error.message }, 'Moonshot API request failed');
-      throw error;
-    }
-  }
-}
-
-// OpenAI Client (backup option)
-class OpenAIClient {
-  constructor() {
-    this.apiKey = process.env.OPENAI_API_KEY;
-    this.baseURL = 'https://api.openai.com/v1';
-    
-    if (!this.apiKey) {
-      throw new Error('OPENAI_API_KEY is required');
-    }
-  }
-
-  async generateResponse(prompt, options = {}) {
-    const { maxTokens = 1000, temperature = 0.3 } = options;
-    
-    try {
-      const response = await fetch(`${this.baseURL}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a disaster response AI coordinator. Provide clear, actionable guidance in valid JSON format only.'
-            },
-            {
-              role: 'user',
-              content: prompt
-            }
-          ],
-          max_tokens: maxTokens,
-          temperature,
-          response_format: { type: 'json_object' }
-        })
-      });
-
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`OpenAI API error ${response.status}: ${error}`);
-      }
-
-      const result = await response.json();
-      return result.choices[0].message.content;
-      
-    } catch (error) {
-      logger.error({ error: error.message }, 'OpenAI API request failed');
-      throw error;
-    }
-  }
-}
-
 // Main Response Orchestrator Service
-class ResponseOrchestratorService {
+class OriginalResponseOrchestratorService {
   constructor(options = {}) {
     this.searchService = options.searchService || require('./searchService');
-    this.aiProvider = options.aiProvider || 'moonshot';
-    this.aiClient = AIClientFactory.create(this.aiProvider);
+    this.aiClient = aiClient;
+    this.aiProvider = process.env.AI_PROVIDER || 'moonshot';
     this.cacheEnabled = options.cacheEnabled !== false;
     this.cacheTtl = options.cacheTtl || 3600; // 1 hour
     
@@ -598,11 +477,9 @@ Respond with only the JSON object, no additional text.
   }
 }
 
-// Export singleton instance
-const responseOrchestrator = new ResponseOrchestratorService();
+const responseOrchestrator = new OriginalResponseOrchestratorService();
 
 module.exports = {
-  ResponseOrchestratorService,
   responseOrchestrator,
-  AIClientFactory
+  OriginalResponseOrchestratorService
 };
