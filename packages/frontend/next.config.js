@@ -1,8 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    appDir: true,
-  },
+  reactStrictMode: true,
+  // Removed experimental.appDir as it's not needed in Next.js 14
+  // and causes a warning
 }
 
 module.exports = nextConfig

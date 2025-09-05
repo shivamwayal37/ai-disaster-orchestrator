@@ -1,51 +1,42 @@
-export default function Home() {
+import DashboardLayout from '@/components/DashboardLayout'
+
+async function getInitialAlerts() {
+  try {
+    const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/incidents`, {
+      cache: 'no-store', // Always get fresh data
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!res.ok) {
+      console.error('Failed to fetch initial alerts:', res.statusText);
+      return { data: [] };
+    }
+    
+    return await res.json();
+  } catch (error) {
+    console.error('Error fetching initial alerts:', error);
+    return { data: [] };
+  }
+}
+
+export default async function Page({ searchParams }) {
+  const initialAlerts = await getInitialAlerts();
+  
   return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
-      <div className="max-w-4xl mx-auto">
-        <header className="text-center mb-12">
-          <h1 className="text-4xl font-bold text-gray-900 mb-4">
-            AI Disaster Response Orchestrator
-          </h1>
-          <p className="text-xl text-gray-600">
-            Intelligent multi-step disaster response coordination system
-          </p>
-        </header>
-
-        <div className="grid md:grid-cols-2 gap-8">
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <h2 className="text-2xl font-semibold text-gray-800 mb-4">
-              System Status
-            </h2>
-            <div className="space-y-3">
-              <div className="flex items-center">
-                <div className="w-3 h-3 bg-green-500 rounded-full mr-3"></div>
-                <span>Frontend: Online</span>
-              </div>
-              <div className="flex items-center">
-                <div className="w-3 h-3 bg-yellow-500 rounded-full mr-3"></div>
-                <span>Backend: Connecting...</span>
-              </div>
-              <div className="flex items-center">
-                <div className="w-3 h-3 bg-yellow-500 rounded-full mr-3"></div>
-                <span>TiDB: Pending Setup</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <h2 className="text-2xl font-semibold text-gray-800 mb-4">
-              Day 1 Progress
-            </h2>
-            <p className="text-gray-600 mb-4">
-              Frontend dashboard scaffolded with Next.js and Tailwind CSS.
-              Ready for disaster incident visualization and management.
-            </p>
-            <div className="text-sm text-gray-500">
-              Next: Backend API and TiDB integration
-            </div>
-          </div>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      {/* Animated background elements */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute -inset-10 opacity-30">
+          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-disaster-red rounded-full mix-blend-multiply filter blur-xl animate-pulse"></div>
+          <div className="absolute top-3/4 right-1/4 w-96 h-96 bg-disaster-orange rounded-full mix-blend-multiply filter blur-xl animate-pulse delay-75"></div>
+          <div className="absolute bottom-1/4 left-1/3 w-96 h-96 bg-disaster-blue rounded-full mix-blend-multiply filter blur-xl animate-pulse delay-150"></div>
         </div>
       </div>
-    </main>
-  )
+      
+      <DashboardLayout initialAlerts={initialAlerts.data} searchParams={searchParams} />
+    </div>
+  );
 }
+
