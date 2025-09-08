@@ -8,10 +8,11 @@ const pino = require('pino');
 const { getVectorStore } = require('../services/vectorStore');
 const { initializeRedisClient } = require('../utils/cache');
 const { v4: uuidv4 } = require('uuid');
-require('../utils/bigIntSerialization');
 
 const logger = pino({ name: 'db-insert' });
 const vectorStore = getVectorStore();
+
+require('../utils/bigIntSerialization');
 
 /**
  * Insert normalized alert into TiDB documents table

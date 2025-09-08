@@ -222,7 +222,10 @@ function mergeResults(vectorResults = [], textResults = [], limit = 10) {
 }
 
 function normalizeSearchType(type) {
-  const fallbackMap = { disaster: 'incident' };
+  const fallbackMap = { 
+    disaster: 'document',
+    incident: 'alert'
+  };
   return fallbackMap[type] || type;
 }
 

@@ -80,9 +80,13 @@ async function retrieveAndGenerate(query, options = {}) {
     const searchResults = await Promise.all(searchPromises);
     retrievalLog.performance.searchTime = Date.now() - searchStartTime;
 
-    // Step 4: Process and combine search results
-    const incidents = searchResults.find(r => r.type === 'incidents')?.results || [];
-    const protocols = searchResults.find(r => r.type === 'protocols')?.results || [];
+    // Step 4: Process and combine search results with additional defensive coding
+    const safeSearchResults = Array.isArray(searchResults) ? searchResults : [];
+    const incidentsResult = safeSearchResults.find(r => r && r.type === 'incidents');
+    const protocolsResult = safeSearchResults.find(r => r && r.type === 'protocols');
+    
+    const incidents = (incidentsResult && Array.isArray(incidentsResult.results)) ? incidentsResult.results : [];
+    const protocols = (protocolsResult && Array.isArray(protocolsResult.results)) ? protocolsResult.results : [];
 
     retrievalLog.results = {
       incidents: incidents.length,
