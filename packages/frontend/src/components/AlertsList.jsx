@@ -8,6 +8,8 @@ import LiveTime from './LiveTime'
 export default function AlertsList({ alerts, onAlertSelect, selectedAlert, isLoading }) {
   const [sortBy, setSortBy] = useState('timestamp') // timestamp, severity, location
   const [filterBy, setFilterBy] = useState('all') // all, critical, high, medium, low
+  const [currentPage, setCurrentPage] = useState(1)
+  const [itemsPerPage] = useState(20)
 
   // Sort alerts based on selected criteria
   const sortedAlerts = [...alerts].sort((a, b) => {
@@ -27,6 +29,22 @@ export default function AlertsList({ alerts, onAlertSelect, selectedAlert, isLoa
     if (filterBy === 'all') return true
     return (alert.severity || '').toLowerCase() === filterBy.toLowerCase()
   })
+
+  // Pagination
+  const totalPages = Math.ceil(filteredAlerts.length / itemsPerPage)
+  const startIndex = (currentPage - 1) * itemsPerPage
+  const paginatedAlerts = filteredAlerts.slice(startIndex, startIndex + itemsPerPage)
+
+  // Reset to first page when filters change
+  const handleFilterChange = (newFilter) => {
+    setFilterBy(newFilter)
+    setCurrentPage(1)
+  }
+
+  const handleSortChange = (newSort) => {
+    setSortBy(newSort)
+    setCurrentPage(1)
+  }
 
   if (alerts.length === 0) {
     return (
@@ -64,7 +82,7 @@ export default function AlertsList({ alerts, onAlertSelect, selectedAlert, isLoa
         <div className="flex space-x-3">
           <select
             value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
+            onChange={(e) => handleSortChange(e.target.value)}
             className="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-disaster-blue"
           >
             <option value="timestamp">Latest First</option>
@@ -74,7 +92,7 @@ export default function AlertsList({ alerts, onAlertSelect, selectedAlert, isLoa
           
           <select
             value={filterBy}
-            onChange={(e) => setFilterBy(e.target.value)}
+            onChange={(e) => handleFilterChange(e.target.value)}
             className="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-disaster-blue"
           >
             <option value="all">All Levels</option>
@@ -88,7 +106,7 @@ export default function AlertsList({ alerts, onAlertSelect, selectedAlert, isLoa
 
       {/* Alerts List */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
-        {filteredAlerts.map((alert, index) => (
+        {paginatedAlerts.map((alert, index) => (
           <AlertCard
             key={alert.id || index}
             alert={alert}
@@ -98,6 +116,36 @@ export default function AlertsList({ alerts, onAlertSelect, selectedAlert, isLoa
           />
         ))}
       </div>
+
+      {/* Pagination Controls */}
+      {totalPages > 1 && (
+        <div className="p-4 border-t border-white/20">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-gray-300">
+              Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, filteredAlerts.length)} of {filteredAlerts.length} alerts
+            </div>
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1 bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white text-sm transition-colors"
+              >
+                Previous
+              </button>
+              <span className="text-sm text-gray-300">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                disabled={currentPage === totalPages}
+                className="px-3 py-1 bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white text-sm transition-colors"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

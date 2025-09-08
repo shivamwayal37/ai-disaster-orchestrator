@@ -6,10 +6,9 @@
 const { runManualIngestion } = require('./orchestrator');
 const { prisma } = require('../db');
 const pino = require('pino');
-const { getEmbeddingsClient } = require('../services/embeddingsClient');
-
 const logger = pino({ name: 'pipeline-test' });
-const embeddingsClient = getEmbeddingsClient();
+
+const { hybridSearch } = require('../services/searchService');
 
 /**
  * Test the complete ingestion pipeline
@@ -38,7 +37,7 @@ async function testIngestionPipeline() {
     // Step 3: Run ingestion pipeline
     console.log('3️⃣ Running full ingestion pipeline...');
     const pipelineResult = await runManualIngestion('all');
-    
+
     if (pipelineResult.success) {
       console.log('✅ Pipeline completed successfully');
       console.log('📊 Pipeline Stats:', JSON.stringify(pipelineResult.stats, null, 2));
@@ -55,14 +54,14 @@ async function testIngestionPipeline() {
     const documentCount = await prisma.document.count();
     const alertCount = await prisma.alert.count();
     const workQueueCount = await prisma.workQueue.count();
-    
+
     console.log(`📄 Documents inserted: ${documentCount}`);
     console.log(`🚨 Alerts inserted: ${alertCount}`);
     console.log(`⚙️ Work queue items: ${workQueueCount}`);
 
     // Step 5: Test search functionality
     console.log('\n5️⃣ Testing search functionality...');
-    
+
     // Test full-text search
     const searchTerm = 'fire';
     const searchResults = await prisma.document.findMany({
@@ -73,33 +72,31 @@ async function testIngestionPipeline() {
       },
       take: 3
     });
-    
+
     console.log(`🔍 Full-text search results for '${searchTerm}': ${searchResults.length} documents found`);
-    
-    // Test vector search if embeddings are available
-    console.log('\n🧠 Testing vector search...');
+
+    // Test hybrid search (Jina-based)
+    console.log('\n🧠 Testing hybrid search (Jina)...');
+    let hybridResults = [];
+
     try {
-      const [embedding] = await embeddingsClient.generateEmbeddings([searchTerm]);
-      const vectorResults = await prisma.$queryRaw`
-        SELECT id, title, category, 
-               VECTOR_DISTANCE(embedding, ${JSON.stringify(embedding)}) as distance
-        FROM documents
-        WHERE JSON_VALID(embedding)
-        ORDER BY distance ASC
-        LIMIT 3
-      `;
-      
-      console.log(`🔢 Vector search results for '${searchTerm}': ${vectorResults.length} documents found`);
-      if (vectorResults.length > 0) {
-        console.log('Top vector result:', {
-          title: vectorResults[0].title,
-          category: vectorResults[0].category,
-          distance: vectorResults[0].distance
+      hybridResults = await hybridSearch(searchTerm, {
+        type: 'document',
+        limit: 3
+      });
+
+      console.log(`🔢 Hybrid search results for '${searchTerm}': ${hybridResults.length} documents found`);
+
+      if (hybridResults.length > 0) {
+        console.log('Top hybrid result:', {
+          id: hybridResults[0].id,
+          type: hybridResults[0].type || hybridResults[0].category,
+          score: hybridResults[0].score || hybridResults[0].similarity,
+          snippet: (hybridResults[0].content || hybridResults[0].message || '').substring(0, 100) + '...'
         });
       }
     } catch (error) {
-      console.warn('⚠️ Vector search test skipped - embeddings may not be generated yet');
-      console.debug('Vector search error:', error.message);
+      console.error('❌ Hybrid search test failed:', error.message);
     }
 
     // Step 6: Check ingestion logs
@@ -127,7 +124,7 @@ async function testIngestionPipeline() {
     console.log(`  - Alerts: ${alertCount}`);
     console.log(`  - Queue items: ${workQueueCount}`);
     console.log(`  - Full-text search working: ${searchResults.length > 0 ? 'Yes' : 'No'}`);
-    console.log(`  - Vector search working: ${vectorResults ? 'Yes' : 'No'}`);
+    console.log(`  - Vector search working: ${hybridResults.length > 0 ? 'Yes' : 'No'}`);
     console.log(`  - Logging working: ${recentLogs.length > 0 ? 'Yes' : 'No'}`);
 
     return {
@@ -137,7 +134,7 @@ async function testIngestionPipeline() {
         alerts: alertCount,
         queueItems: workQueueCount,
         fullTextSearchWorking: searchResults.length > 0,
-        vectorSearchWorking: !!vectorResults,
+        vectorSearchWorking: hybridResults.length > 0,
         loggingWorking: recentLogs.length > 0
       }
     };
@@ -145,7 +142,7 @@ async function testIngestionPipeline() {
   } catch (error) {
     console.error('❌ Pipeline test failed:', error.message);
     logger.error(error, 'Pipeline test failed');
-    
+
     return {
       success: false,
       error: error.message
@@ -160,19 +157,19 @@ async function testIngestionPipeline() {
  */
 async function testSingleSource(source) {
   console.log(`🧪 Testing ${source} ingestion...`);
-  
+
   try {
     await prisma.$connect();
-    
+
     const result = await runManualIngestion(source);
-    
+
     if (result.success) {
       console.log(`✅ ${source} ingestion test passed`);
       console.log('📊 Stats:', JSON.stringify(result.stats, null, 2));
     } else {
       console.log(`❌ ${source} ingestion test failed:`, result.error);
     }
-    
+
     return result;
   } catch (error) {
     console.error(`💥 ${source} test crashed:`, error.message);
@@ -193,7 +190,7 @@ if (require.main === module) {
         .then(() => process.exit(0))
         .catch(() => process.exit(1));
       break;
-      
+
     case 'source':
       const source = args[1];
       if (!source) {
@@ -204,7 +201,7 @@ if (require.main === module) {
         .then(() => process.exit(0))
         .catch(() => process.exit(1));
       break;
-      
+
     default:
       console.log('Usage:');
       console.log('  node test-pipeline.js full           - Test complete pipeline');

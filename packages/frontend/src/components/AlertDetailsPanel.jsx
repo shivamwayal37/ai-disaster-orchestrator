@@ -28,7 +28,7 @@ export default function AlertDetailsPanel({ selectedAlert, isLoading }) {
     setPlanError(null)
     
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000'}/api/orchestrate`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/orchestrate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -49,7 +49,7 @@ export default function AlertDetailsPanel({ selectedAlert, isLoading }) {
       }
 
       const data = await response.json()
-      setActionPlan(data)
+      setActionPlan(data.action_plan || data)
     } catch (error) {
       console.error('Error generating action plan:', error)
       setPlanError('Failed to generate action plan. Please try again.')

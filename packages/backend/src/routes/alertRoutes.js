@@ -265,4 +265,58 @@ router.get(
   }
 );
 
+/**
+ * @route   GET /api/alerts/stream
+ * @desc    Server-Sent Events stream for real-time alerts
+ * @access  Public (in production, this would be protected)
+ */
+router.get('/stream', (req, res) => {
+  // Set SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Cache-Control'
+  });
+
+  // Send initial connection confirmation
+  res.write('data: {"type":"connected","message":"Alert stream connected"}\n\n');
+
+  // Store client connection
+  const clientId = Date.now();
+  
+  // Send periodic heartbeat to keep connection alive
+  const heartbeat = setInterval(() => {
+    res.write('data: {"type":"heartbeat","timestamp":"' + new Date().toISOString() + '"}\n\n');
+  }, 30000);
+
+  // Send initial alerts
+  alertService.searchAlerts('', { limit: 10, offset: 0 })
+    .then(results => {
+      if (results.results && results.results.length > 0) {
+        results.results.forEach(alert => {
+          res.write(`data: ${JSON.stringify({
+            type: 'alert',
+            data: alert
+          })}\n\n`);
+        });
+      }
+    })
+    .catch(error => {
+      logger.error({ error }, 'Failed to send initial alerts');
+    });
+
+  // Handle client disconnect
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    logger.info({ clientId }, 'SSE client disconnected');
+  });
+
+  req.on('error', (error) => {
+    clearInterval(heartbeat);
+    logger.error({ error, clientId }, 'SSE client error');
+  });
+});
+
 module.exports = router;

@@ -79,19 +79,7 @@ const errorHandler = (err, req, res, next) => {
   });
 };
 
-/**
- * Custom error class for API errors
- */
-class ApiError extends Error {
-  constructor(message, statusCode = 500, code = 'INTERNAL_ERROR', details = null) {
-    super(message);
-    this.statusCode = statusCode;
-    this.code = code;
-    this.details = details;
-    this.isOperational = true;
-    Error.captureStackTrace(this, this.constructor);
-  }
-}
+// ApiError is imported from '../utils/ApiError' at the top of the file
 
 /**
  * 404 Not Found handler middleware

@@ -15,13 +15,13 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with UTF-8 encoding support
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('embedding_worker.log')
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('embedding_worker.log', encoding='utf-8')
     ]
 )
 logger = logging.getLogger("embedding_worker")
@@ -86,7 +86,7 @@ class DatabaseService:
             "port": int(os.getenv("TIDB_PORT", "4000")),
             "user": os.getenv("TIDB_USER"),
             "password": os.getenv("TIDB_PASSWORD"),
-            "database": os.getenv("TIDB_DATABASE", "disaster_response")
+            "database": os.getenv("TIDB_DATABASE", "disaster_db")
         }
         self._check_config()
     
@@ -110,17 +110,19 @@ class DatabaseService:
             cursor = conn.cursor()
             
             query = """
-            UPDATE alerts 
-            SET embedding = %s, status = 'processed', updated_at = %s
+            UPDATE documents 
+            SET embedding = %s, updated_at = %s
             WHERE id = %s
             """
             
-            # The mysql-connector-python handles Python lists for VECTOR types
+            # Manually convert the Python list to a JSON string format for TiDB VECTOR type
+            embedding_str = json.dumps(embedding)
+            
             await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: cursor.execute(
                     query,
-                    (embedding, datetime.utcnow(), alert_id)
+                    (embedding_str, datetime.utcnow(), alert_id)
                 )
             )
             
@@ -128,7 +130,7 @@ class DatabaseService:
             return cursor.rowcount > 0
             
         except Exception as e:
-            logger.error(f"Error updating alert embedding: {str(e)}")
+            logger.error(f"Error updating document embedding: {str(e)}")
             return False
             
         finally:
@@ -175,17 +177,17 @@ class EmbeddingTask:
         try:
             embedding = await self.embedding_service.get_embedding(content)
             if not embedding or len(embedding) != 1024:
-                logger.error(f"❌ Failed to generate a valid embedding for alert {alert_id}")
+                logger.error(f"[ERROR] Failed to generate a valid embedding for alert {alert_id}")
                 return False
 
             success = await self.db_service.update_alert_embedding(alert_id, embedding)
             if success:
-                logger.info(f"✅ Stored embedding for alert {alert_id}")
+                logger.info(f"[SUCCESS] Stored embedding for alert {alert_id}")
             else:
-                logger.error(f"❌ Failed to store embedding for alert {alert_id} in database")
+                logger.error(f"[ERROR] Failed to store embedding for alert {alert_id} in database")
             return success
         except Exception as e:
-            logger.error(f"❌ Failed to store embedding for alert {alert_id}: {e}")
+            logger.error(f"[ERROR] Failed to store embedding for alert {alert_id}: {e}")
             return False
 
     async def run(self):

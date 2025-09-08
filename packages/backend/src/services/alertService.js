@@ -12,7 +12,11 @@ const redisClient = createClient({
 });
 
 redisClient.on('error', (err) => logger.error('Redis Client Error', err));
-redisClient.connect().catch(console.error);
+
+// Only connect Redis in non-test environments
+if (process.env.NODE_ENV !== 'test') {
+  redisClient.connect().catch(console.error);
+}
 
 const EMBEDDING_QUEUE_NAME = 'embedding-queue';
 
@@ -34,14 +38,15 @@ class AlertService {
       // Create alert in database
       const alert = await prisma.alert.create({
         data: {
-          id: alertId,
+          alert_uid: alertId,
           source,
-          type,
+          alertType: type,
           severity,
           location,
-          coordinates: JSON.stringify(coordinates),
+          latitude: coordinates?.latitude || null,
+          longitude: coordinates?.longitude || null,
           description,
-          metadata: JSON.stringify(metadata),
+          rawData: metadata,
           status: 'PENDING',
           embedding: null
         }

@@ -261,11 +261,10 @@ if (require.main === module) {
     runQuickIngestion()
       .then(() => process.exit(0))
       .catch(() => process.exit(1));
-    return;
-  }
-  const source = args[1] || 'all';
+  } else {
+    const source = args[1] || 'all';
 
-  switch (command) {
+    switch (command) {
     case 'run':
       runManualIngestion(source)
         .then(() => process.exit(0))
@@ -296,6 +295,7 @@ if (require.main === module) {
       console.log('  node orchestrator.js start            - Start scheduled ingestion');
       console.log('  node orchestrator.js status           - Check scheduler status');
       process.exit(1);
+    }
   }
 }
 

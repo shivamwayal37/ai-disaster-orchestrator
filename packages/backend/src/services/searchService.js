@@ -16,7 +16,11 @@ const redisClient = createClient({
 });
 
 redisClient.on('error', (err) => logger.error('Redis Client Error', err));
-redisClient.connect().catch(console.error);
+
+// Only connect Redis in non-test environments
+if (process.env.NODE_ENV !== 'test') {
+  redisClient.connect().catch(console.error);
+}
 
 /**
  * Get embedding from Jina API with caching

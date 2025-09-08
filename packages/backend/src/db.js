@@ -24,9 +24,8 @@ if (process.env.NODE_ENV === 'development') {
   });
 }
 
-prisma.$on('error', (e) => {
-  logger.error(e, 'Database error');
-});
+// Handle database errors through try-catch in operations
+// Note: $on('error') may not be available in all Prisma versions
 
 // Test database connection
 async function testConnection() {

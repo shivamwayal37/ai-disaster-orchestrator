@@ -5,15 +5,15 @@
 
 const { PrismaClient } = require('@prisma/client');
 const pino = require('pino');
-const { getEmbeddingsClient } = require('./embeddingsClient');
+const { embeddingService } = require('./embeddingService');
 
 const logger = pino({ name: 'vector-store' });
 
 class VectorStore {
   constructor() {
     this.prisma = new PrismaClient();
-    this.embeddingsClient = getEmbeddingsClient();
-    this.dimensions = this.embeddingsClient.getDimensions();
+    this.embeddingService = embeddingService;
+    this.dimensions = 768; // Jina embeddings v2 base dimension
   }
 
   /**
@@ -47,7 +47,7 @@ class VectorStore {
       }
 
       // Generate embedding
-      const [embedding] = await this.embeddingsClient.generateEmbeddings([textToEmbed]);
+      const embedding = await this.embeddingService.generateVectorEmbedding(textToEmbed);
       
       // Update document with embedding
       const updateData = { embedding };
@@ -103,7 +103,7 @@ class VectorStore {
 
     try {
       // Generate query embedding
-      const [queryEmbedding] = await this.embeddingsClient.generateEmbeddings([query]);
+      const queryEmbedding = await this.embeddingService.generateVectorEmbedding(query);
       
       // Build the raw SQL query for hybrid search
       let sqlQuery;

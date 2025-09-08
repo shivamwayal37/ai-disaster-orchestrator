@@ -167,27 +167,41 @@ async function generateQueryEmbedding(query) {
  * Prepare context for RAG from search results
  */
 function prepareRAGContext(incidents, protocols, extractedEntities) {
+  // Defensive handling for empty/undefined results
+  const safeIncidents = Array.isArray(incidents) ? incidents : [];
+  const safeProtocols = Array.isArray(protocols) ? protocols : [];
+  
   const context = {
-    query_entities: extractedEntities,
-    similar_incidents: incidents.map(incident => ({
-      id: incident.id,
-      title: incident.title,
-      summary: incident.summary || incident.content.substring(0, 200) + '...',
-      disaster_type: incident.alert?.alertType || 'unknown',
-      severity: incident.alert?.severity || 'unknown',
-      location: incident.alert?.location || 'unknown',
-      confidence: incident.confidence,
-      hybrid_score: incident.hybridScore,
-      date: incident.publishedAt
-    })),
-    relevant_protocols: protocols.map(protocol => ({
-      id: protocol.id,
-      title: protocol.title,
-      summary: protocol.summary || protocol.content.substring(0, 300) + '...',
-      key_actions: extractKeyActions(protocol.content),
-      authority: protocol.sourceUrl || 'Unknown Authority',
-      confidence: protocol.confidence
-    }))
+    query_entities: extractedEntities || null,
+    similar_incidents: safeIncidents.map(incident => {
+      // Defensive handling for incident properties
+      if (!incident) return null;
+      
+      return {
+        id: incident.id || 'unknown',
+        title: incident.title || 'Untitled Incident',
+        summary: incident.summary || (incident.content ? incident.content.substring(0, 200) + '...' : 'No summary available'),
+        disaster_type: incident.alert?.alertType || incident.type || 'unknown',
+        severity: incident.alert?.severity || incident.severity || 'unknown',
+        location: incident.alert?.location || incident.location || 'unknown',
+        confidence: incident.confidence || 0,
+        hybrid_score: incident.hybridScore || 0,
+        date: incident.publishedAt || incident.createdAt || new Date().toISOString()
+      };
+    }).filter(incident => incident !== null), // Remove any null entries
+    relevant_protocols: safeProtocols.map(protocol => {
+      // Defensive handling for protocol properties
+      if (!protocol) return null;
+      
+      return {
+        id: protocol.id || 'unknown',
+        title: protocol.title || 'Untitled Protocol',
+        summary: protocol.summary || (protocol.content ? protocol.content.substring(0, 300) + '...' : 'No summary available'),
+        key_actions: protocol.content ? extractKeyActions(protocol.content) : ['Follow established emergency protocols'],
+        authority: protocol.sourceUrl || protocol.source || 'Unknown Authority',
+        confidence: protocol.confidence || 0
+      };
+    }).filter(protocol => protocol !== null) // Remove any null entries
   };
 
   return context;
@@ -197,50 +211,70 @@ function prepareRAGContext(incidents, protocols, extractedEntities) {
  * Extract key actions from protocol content
  */
 function extractKeyActions(content) {
+  // Defensive handling for undefined/null content
+  if (!content || typeof content !== 'string') {
+    return ['Follow established emergency protocols'];
+  }
+
   const actionKeywords = [
     'evacuate', 'shelter', 'contact', 'notify', 'assess', 'deploy',
     'coordinate', 'establish', 'monitor', 'secure', 'provide', 'activate'
   ];
   
-  const sentences = content.split(/[.!?]+/).filter(s => s.trim().length > 10);
-  const actions = [];
-  
-  for (const sentence of sentences) {
-    const lowerSentence = sentence.toLowerCase();
-    if (actionKeywords.some(keyword => lowerSentence.includes(keyword))) {
-      actions.push(sentence.trim());
-      if (actions.length >= 5) break;
+  try {
+    const sentences = content.split(/[.!?]+/).filter(s => s && s.trim().length > 10);
+    const actions = [];
+    
+    for (const sentence of sentences) {
+      if (!sentence) continue;
+      const lowerSentence = sentence.toLowerCase();
+      if (actionKeywords.some(keyword => lowerSentence.includes(keyword))) {
+        actions.push(sentence.trim());
+        if (actions.length >= 5) break;
+      }
     }
+    
+    return actions.length > 0 ? actions : ['Follow established emergency protocols'];
+  } catch (error) {
+    logger.warn({ error: error.message }, 'Error extracting key actions from content');
+    return ['Follow established emergency protocols'];
   }
-  
-  return actions.length > 0 ? actions : ['Follow established emergency protocols'];
 }
 
 /**
  * Generate fallback response when RAG fails
  */
 function generateFallbackResponse(query, context) {
-  const { similar_incidents, relevant_protocols } = context;
+  // Defensive handling for undefined context
+  if (!context) {
+    context = { similar_incidents: [], relevant_protocols: [] };
+  }
+  
+  const { similar_incidents = [], relevant_protocols = [] } = context;
   
   let response = `Based on the query "${query}", here's what I found:\n\n`;
   
-  if (similar_incidents.length > 0) {
+  if (Array.isArray(similar_incidents) && similar_incidents.length > 0) {
     response += `**Similar Past Incidents:**\n`;
     similar_incidents.slice(0, 3).forEach((incident, i) => {
-      response += `${i + 1}. ${incident.title} (${incident.location})\n`;
-      response += `   - Type: ${incident.disaster_type}, Severity: ${incident.severity}\n`;
-      response += `   - Summary: ${incident.summary}\n\n`;
+      if (incident) {
+        response += `${i + 1}. ${incident.title || 'Unknown Incident'} (${incident.location || 'Unknown Location'})\n`;
+        response += `   - Type: ${incident.disaster_type || 'Unknown'}, Severity: ${incident.severity || 'Unknown'}\n`;
+        response += `   - Summary: ${incident.summary || 'No summary available'}\n\n`;
+      }
     });
   }
   
-  if (relevant_protocols.length > 0) {
+  if (Array.isArray(relevant_protocols) && relevant_protocols.length > 0) {
     response += `**Relevant Response Protocols:**\n`;
     relevant_protocols.forEach((protocol, i) => {
-      response += `${i + 1}. ${protocol.title}\n`;
-      if (protocol.key_actions.length > 0) {
-        response += `   - Key Actions: ${protocol.key_actions.slice(0, 3).join('; ')}\n`;
+      if (protocol) {
+        response += `${i + 1}. ${protocol.title || 'Unknown Protocol'}\n`;
+        if (Array.isArray(protocol.key_actions) && protocol.key_actions.length > 0) {
+          response += `   - Key Actions: ${protocol.key_actions.slice(0, 3).join('; ')}\n`;
+        }
+        response += `\n`;
       }
-      response += `\n`;
     });
   }
   

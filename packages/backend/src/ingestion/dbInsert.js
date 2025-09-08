@@ -6,6 +6,9 @@
 const { prisma } = require('../db');
 const pino = require('pino');
 const { getVectorStore } = require('../services/vectorStore');
+const { initializeRedisClient } = require('../utils/cache');
+const { v4: uuidv4 } = require('uuid');
+require('../utils/bigIntSerialization');
 
 const logger = pino({ name: 'db-insert' });
 const vectorStore = getVectorStore();
@@ -40,6 +43,7 @@ async function insertAlert(normalizedAlert, kimiProcessed = null) {
     let alertRecord = null;
     if (source !== 'protocol') {
       const alertData = {
+        alert_uid: uuidv4(),   // ✅ unique string UID
         source: source,
         alertType: kimiProcessed?.entities?.disaster_type || meta?.event_type || 'other',
         title: documentData.title,
@@ -113,7 +117,7 @@ async function insertAlert(normalizedAlert, kimiProcessed = null) {
  * Queue embedding generation task
  */
 /**
- * Queue embedding generation task
+ * Queue embedding generation task using Redis
  * @param {number} documentId - ID of the document to embed
  * @param {string} text - Text content to generate embedding for
  * @returns {Promise<boolean>} True if queued successfully
@@ -125,28 +129,25 @@ async function queueEmbeddingTask(documentId, text) {
   }
 
   try {
-    const task = await prisma.workQueue.create({
-      data: {
-        taskType: 'DOCUMENT_EMBED',  // More specific task type
-        payload: {
-          documentId: documentId,    // Consistent casing with other IDs
-          text: text.substring(0, 10000),  // Limit text length
-          model: 'jina-embeddings-v2-base-en',
-          dimensions: 768,
-          timestamp: new Date().toISOString()
-        },
-        priority: 3,  // Medium priority
-        status: 'PENDING',
-        retryCount: 0,
-        maxRetries: 3
-      }
-    });
+    const redisClient = initializeRedisClient();
+    
+    // Create job payload matching Python worker expectations
+    const jobPayload = {
+      id: documentId,           // Python worker expects 'id' field
+      content: text.substring(0, 10000),  // Limit text length
+      timestamp: new Date().toISOString(),
+      model: 'jina-embeddings-v2-base-en',
+      dimensions: 1024          // Updated to match Python worker expectation
+    };
+
+    // Push job to Redis queue (left push for FIFO with brpop)
+    await redisClient.lpush('embedding-queue', JSON.stringify(jobPayload));
 
     logger.debug({ 
-      taskId: task.id, 
       documentId,
-      textLength: text.length 
-    }, 'Embedding task queued successfully');
+      textLength: text.length,
+      queueName: 'embedding-queue'
+    }, 'Embedding task queued successfully to Redis');
     
     return true;
   } catch (error) {
@@ -154,10 +155,10 @@ async function queueEmbeddingTask(documentId, text) {
       error: error.message,
       documentId,
       stack: error.stack 
-    }, 'Failed to queue embedding task');
+    }, 'Failed to queue embedding task to Redis');
     
-    // Rethrow to allow caller to handle the error
-    throw error;
+    // Don't rethrow - allow ingestion to continue even if queueing fails
+    return false;
   }
 }
 

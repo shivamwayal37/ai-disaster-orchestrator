@@ -42,9 +42,9 @@ ajv.compile(responseSchema);
 class PerformanceOptimizer {
   constructor() {
     this.thresholds = {
-      vectorSearch: 2000,
-      aiGeneration: 8000,
-      totalResponse: 20000,
+      vectorSearch: 10000,
+      aiGeneration: 30000,
+      totalResponse: 35000,
       cacheHit: 100
     };
     this.metrics = {
@@ -61,8 +61,8 @@ class PerformanceOptimizer {
     this.circuitBreaker = new CircuitBreaker({
       failureThreshold: 3,
       successThreshold: 2,
-      timeout: 20000,
-      resetTimeout: 30000
+      timeout: 35000,
+      resetTimeout: 45000
     });
     this.errorHandler = new EnhancedErrorHandler();
     logger.info('Performance Optimizer initialized');

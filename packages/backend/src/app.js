@@ -28,6 +28,7 @@ const respondRoutes = require('./routes/respond');
 const incidentsRoutes = require('./routes/incidents');
 const orchestratorRoutes = require('./routes/orchestratorRoutes');
 const { ActionOrchestrator } = require('./services/actionServices');
+const alertRoutes = require('./routes/alertRoutes');
 
 const app = express();
 const logger = pino({ name: 'disaster-orchestrator' });
@@ -36,16 +37,23 @@ const logger = pino({ name: 'disaster-orchestrator' });
 const actionOrchestrator = new ActionOrchestrator();
 app.set('actionOrchestrator', actionOrchestrator);
 
-// Initialize action services on startup
-(async () => {
-  try {
-    await actionOrchestrator.init();
-    logger.info('Action services initialized successfully');
-  } catch (error) {
-    logger.error({ error }, 'Failed to initialize action services');
-    // Don't crash the app, but some features may be limited
-  }
-})();
+// Initialize action services and cache on startup
+if (process.env.NODE_ENV !== 'test') {
+  (async () => {
+    try {
+      await actionOrchestrator.init();
+      logger.info('Action services initialized successfully');
+      
+      // Initialize cache service
+      const { cacheService } = require('./services/cacheService');
+      await cacheService.init();
+      logger.info('Cache service initialized successfully');
+    } catch (error) {
+      logger.error({ error }, 'Failed to initialize services');
+      // Don't crash the app, but some features may be limited
+    }
+  })();
+}
 
 // Security middleware
 app.use(helmet());
@@ -67,7 +75,17 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging
-app.use(pinoHttp({ logger }));
+app.use(pinoHttp({
+  logger,
+  customLogLevel: function (req, res, err) {
+    if (res.statusCode >= 400 && res.statusCode < 500) {
+      return 'warn'
+    } else if (res.statusCode >= 500 || err) {
+      return 'error'
+    }
+    return 'info'
+  }
+}));
 
 // API Routes
 app.use('/api/search', searchRoutes);
@@ -104,6 +122,8 @@ app.get('/', (req, res) => {
     documentation: 'See README.md for API documentation'
   });
 });
+
+app.use('/api/alerts', alertRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

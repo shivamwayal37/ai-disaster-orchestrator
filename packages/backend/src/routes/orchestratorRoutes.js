@@ -8,7 +8,7 @@ const rateLimit = require('express-rate-limit');
 const { body, query, validationResult } = require('express-validator');
 const { responseOrchestrator } = require('../services/responseOrchestratorService');
 const pino = require('pino');
-
+const dotenv = require('dotenv');
 const router = express.Router();
 const logger = pino({ name: 'orchestrator-api' });
 
@@ -95,7 +95,8 @@ router.post('/',
       
       res.json({
         success: true,
-        data: actionPlan,
+        request_id: actionPlan.metadata?.requestId || `req_${Date.now()}`,
+        action_plan: actionPlan,
         response_time_ms: responseTime
       });
 

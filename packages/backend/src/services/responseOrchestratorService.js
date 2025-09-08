@@ -8,6 +8,7 @@ const { validateResponse, sanitizeQuery } = require('../utils/validation');
 const { createCacheKey, getCachedResponse, setCachedResponse } = require('../utils/cache');
 const { EnhancedErrorHandler } = require('./errorHandler');
 const { aiClient } = require('./aiClient');
+const { cacheService } = require('./cacheService');
 
 const logger = pino({ name: 'response-orchestrator' });
 
@@ -19,6 +20,7 @@ class OriginalResponseOrchestratorService {
     this.aiProvider = process.env.AI_PROVIDER || 'moonshot';
     this.cacheEnabled = options.cacheEnabled !== false;
     this.cacheTtl = options.cacheTtl || 3600; // 1 hour
+    this.cacheService = cacheService;
     
     // Response templates for different disaster types
     this.responseTemplates = {
@@ -56,18 +58,35 @@ class OriginalResponseOrchestratorService {
       // 1. Validate and sanitize input
       const validatedQuery = this.validateInput(queryData);
       
-      // 2. Check cache first
+      // 2. Check cache first (Redis-powered caching)
       if (this.cacheEnabled) {
-        const cacheKey = createCacheKey('action_plan', validatedQuery);
-        const cachedResult = await getCachedResponse(cacheKey);
+        const cacheKey = this.cacheService.generateCacheKey(
+          validatedQuery.query,
+          validatedQuery.type,
+          validatedQuery.location,
+          validatedQuery.severity
+        );
+        
+        let cachedResult = await this.cacheService.get(cacheKey);
+        
+        // If exact match not found, try to find similar cached plans
+        if (!cachedResult) {
+          cachedResult = await this.cacheService.findSimilar(
+            validatedQuery.query,
+            validatedQuery.type,
+            validatedQuery.location
+          );
+        }
+        
         if (cachedResult) {
-          logger.info({ requestId, cached: true }, 'Returning cached action plan');
+          logger.info({ requestId, cached: true, cacheKey }, 'Returning cached action plan');
           return {
             ...cachedResult,
             metadata: {
               ...cachedResult.metadata,
               cached: true,
-              requestId
+              requestId,
+              cache_hit: true
             }
           };
         }
@@ -96,10 +115,15 @@ class OriginalResponseOrchestratorService {
         }
       };
 
-      // Cache the response
+      // Cache the response (Redis-powered caching)
       if (this.cacheEnabled) {
-        const cacheKey = createCacheKey('action_plan', validatedQuery);
-        await setCachedResponse(cacheKey, finalResponse, this.cacheTtl);
+        const cacheKey = this.cacheService.generateCacheKey(
+          validatedQuery.query,
+          validatedQuery.type,
+          validatedQuery.location,
+          validatedQuery.severity
+        );
+        await this.cacheService.set(cacheKey, finalResponse, this.cacheTtl);
       }
 
       logger.info({
