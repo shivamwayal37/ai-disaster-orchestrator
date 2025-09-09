@@ -1,0 +1,41 @@
+{
+  "timestamp": "2025-09-09T12:01:44.341Z",
+  "testId": "e2e-test-1757419304341",
+  "totalDuration": "20.02s",
+  "overallStatus": "PASSED",
+  "pipeline": {
+    "A→C: Data Ingestion": "PASSED",
+    "D→E: Embedding & Indexing": "PASSED",
+    "F→I: LLM Orchestration": "PASSED",
+    "J→K: Action Pipeline": "PASSED"
+  },
+  "performance": {
+    "ingestionTime": "4.70s",
+    "embeddingTime": "0.65s",
+    "orchestrationTime": "14.66s",
+    "actionTime": "0.00s"
+  },
+  "dataFlow": {
+    "ingested": true,
+    "normalized": true,
+    "embedded": true,
+    "retrieved": 0,
+    "planGenerated": true,
+    "routeCalculated": true,
+    "notificationsSent": true
+  },
+  "testData": {
+    "incidentQuery": "Major earthquake has hit San Francisco causing building damage and requiring immediate emergency response",
+    "documentsStored": 4,
+    "searchResults": 0,
+    "actionPlanGenerated": true,
+    "fallbackUsed": false
+  },
+  "errors": [],
+  "recommendations": [
+    "Increase training data for better retrieval accuracy",
+    "Set up automated E2E testing in CI/CD pipeline",
+    "Monitor pipeline performance in production with metrics dashboard",
+    "Consider implementing real-time monitoring for each pipeline stage"
+  ]
+}

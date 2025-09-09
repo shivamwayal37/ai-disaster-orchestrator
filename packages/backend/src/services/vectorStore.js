@@ -5,15 +5,15 @@
 
 const { PrismaClient } = require('@prisma/client');
 const pino = require('pino');
-const { embeddingService } = require('./embeddingService');
+const { getJinaEmbedding } = require('./searchService');
 
 const logger = pino({ name: 'vector-store' });
 
 class VectorStore {
   constructor() {
     this.prisma = new PrismaClient();
-    this.embeddingService = embeddingService;
-    this.dimensions = 768; // Jina embeddings v2 base dimension
+    this.embeddingService = { generateVectorEmbedding: getJinaEmbedding };
+    this.dimensions = 1024; // Jina embeddings v3 dimension
   }
 
   /**
@@ -124,14 +124,14 @@ class VectorStore {
               -- Calculate hybrid relevance score (0.7 * vector_similarity + 0.3 * fulltext_relevance)
               -- Note: (1 - COSINE_DISTANCE) converts distance to similarity (0-1, higher is better)
               (
-                0.7 * (1 - COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768)))) +
+                0.7 * (1 - COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024)))) +
                 0.3 * (MATCH(title, content) AGAINST (?) IN NATURAL LANGUAGE MODE)
               ) as relevance
               
             FROM documents
             WHERE 
               -- Vector similarity threshold
-              COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768))) < ?
+              COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024))) < ?
               
               -- Optional: Add additional filters from options
               ${options.filters || ''}
@@ -153,13 +153,13 @@ class VectorStore {
               
               -- Calculate hybrid relevance score
               (
-                0.7 * (1 - COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768)))) +
+                0.7 * (1 - COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024)))) +
                 0.3 * (MATCH(title, description) AGAINST (?) IN NATURAL LANGUAGE MODE)
               ) as relevance
               
             FROM alerts
             WHERE 
-              COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768))) < ?
+              COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024))) < ?
               ${options.filters || ''}
             ORDER BY relevance DESC
             LIMIT ?
@@ -179,14 +179,14 @@ class VectorStore {
               
               -- Calculate hybrid relevance score with emergency boost
               (
-                0.7 * (1 - COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768)))) +
+                0.7 * (1 - COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024)))) +
                 0.3 * (MATCH(name, description, address, city, state) AGAINST (?) IN NATURAL LANGUAGE MODE)
               ) as relevance
               
             FROM resources
             WHERE 
               isActive = true
-              AND COSINE_DISTANCE(embedding, CAST(? AS VECTOR(768))) < ?
+              AND COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024))) < ?
               ${options.filters || ''}
             ORDER BY 
               -- Boost emergency resources

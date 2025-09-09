@@ -6,7 +6,7 @@ const pino = require('pino');
 const logger = pino({ name: 'populate-embeddings' });
 const prisma = new PrismaClient();
 const BATCH_SIZE = 5; // Small batch size to avoid rate limiting
-const EMBEDDING_MODEL = 'jina-embeddings-v2-base-en';
+const EMBEDDING_MODEL = 'jina-embeddings-v3';
 
 async function getTotalDocuments() {
   const result = await prisma.$queryRaw`
