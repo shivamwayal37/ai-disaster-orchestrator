@@ -63,7 +63,7 @@ async function testIngestionPipeline() {
     console.log('\n5️⃣ Testing search functionality...');
 
     // Test full-text search
-    const searchTerm = 'fire';
+    const searchTerm = 'This defines fire as a rapid chemical reaction that produces heat, light, and flame. When uncontrolled, it can lead to disaster';
     const searchResults = await prisma.document.findMany({
       where: {
         content: {

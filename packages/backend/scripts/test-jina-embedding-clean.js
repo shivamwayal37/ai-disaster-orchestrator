@@ -14,7 +14,7 @@
 
 require('dotenv').config();
 // Import the singleton instance of JinaEmbeddingService
-const embeddingService = require('../src/services/jinaEmbeddingService');
+const {getJinaEmbedding} = require('../src/services/searchService');
 
 const TEST_TEXTS = [
   "Tsunami alert in Japan",
@@ -42,7 +42,7 @@ async function testBasicEmbedding() {
     console.log(`Generating embedding for: "${text}"`);
     
     const start = Date.now();
-    const embedding = await embeddingService.generateEmbedding(text);
+    const embedding = await getJinaEmbedding(text);
     const duration = Date.now() - start;
     
     if (!Array.isArray(embedding)) {
@@ -70,7 +70,7 @@ async function testEmptyInput() {
   console.log('\n=== TC-2: Empty String Input ===');
   try {
     console.log('Testing with empty string...');
-    const embedding = await embeddingService.generateEmbedding('');
+    const embedding = await getJinaEmbedding('');
     
     if (!Array.isArray(embedding) || embedding.length !== 1024) {
       throw new Error('Empty string should return a valid embedding');
@@ -93,7 +93,7 @@ async function testLongText() {
   try {
     console.log(`Testing with long text (${LONG_TEXT.length} characters)...`);
     const start = Date.now();
-    const embedding = await embeddingService.generateEmbedding(LONG_TEXT);
+    const embedding = await getJinaEmbedding(LONG_TEXT);
     const duration = Date.now() - start;
     
     if (!Array.isArray(embedding) || embedding.length !== 1024) {
@@ -113,7 +113,7 @@ async function testBatchEmbedding() {
   try {
     console.log(`Generating embeddings for ${TEST_TEXTS.length} texts...`);
     const start = Date.now();
-    const embeddings = await embeddingService.generateBatchEmbeddings(TEST_TEXTS);
+    const embeddings = await getJinaEmbedding(TEST_TEXTS);
     const duration = Date.now() - start;
     
     if (!Array.isArray(embeddings) || embeddings.length !== TEST_TEXTS.length) {

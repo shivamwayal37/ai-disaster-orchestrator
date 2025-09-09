@@ -24,30 +24,40 @@ if (process.env.NODE_ENV !== 'test') {
 
 /**
  * Get embedding from Jina API with caching
- * @param {string} text - Text to get embedding for
- * @returns {Promise<number[]>} - Embedding vector
+ * @param {string|string[]} input - Text or array of texts to get embeddings for
+ * @returns {Promise<number[]|number[][]>} - Single embedding vector or array of vectors
  */
-async function getJinaEmbedding(text) {
+async function getJinaEmbedding(input) {
   const MAX_INPUT_LENGTH = 512;
-  const truncatedText = text.slice(0, MAX_INPUT_LENGTH);
-  const cacheKey = `embedding:${truncatedText}`;
+  const isBatch = Array.isArray(input);
+  
+  // Handle both single string and array of strings
+  const truncatedInput = isBatch
+    ? input.map(txt => String(txt).slice(0, MAX_INPUT_LENGTH))
+    : String(input).slice(0, MAX_INPUT_LENGTH);
+
+  // Create appropriate cache key
+  const cacheKey = isBatch
+    ? `embedding:batch:${truncatedInput.join('|')}`
+    : `embedding:${truncatedInput}`;
 
   try {
     const cachedEmbedding = await redisClient.get(cacheKey);
     if (cachedEmbedding) {
-      logger.info({ query: truncatedText }, 'Embedding cache hit.');
+      logger.info({ isBatch, query: truncatedInput }, 'Embedding cache hit');
       return JSON.parse(cachedEmbedding);
     }
   } catch (err) {
     logger.error({ err }, 'Redis GET failed for embedding cache');
   }
 
-  logger.info({ query: truncatedText }, 'Embedding cache miss, fetching from API.');
+  logger.info({ isBatch, query: truncatedInput }, 'Embedding cache miss, fetching from API');
+  
   const payload = {
     model: "jina-embeddings-v3",
     task: "text-matching",
     dimensions: 1024,
-    input: [truncatedText]
+    input: isBatch ? truncatedInput : [truncatedInput]  // Ensure input is always an array for the API
   };
 
   const resp = await fetch("https://api.jina.ai/v1/embeddings", {
@@ -65,16 +75,17 @@ async function getJinaEmbedding(text) {
   }
 
   const data = await resp.json();
-  const embedding = data.data[0].embedding;
+  const embeddings = data.data.map(d => d.embedding);
+  const result = isBatch ? embeddings : embeddings[0];
 
   try {
     // Cache the result for 1 hour
-    await redisClient.set(cacheKey, JSON.stringify(embedding), { EX: 3600 });
+    await redisClient.set(cacheKey, JSON.stringify(result), { EX: 3600 });
   } catch (err) {
     logger.error({ err }, 'Redis SET failed for embedding cache');
   }
 
-  return embedding;
+  return result;
 }
 
 /**
@@ -144,46 +155,71 @@ async function fullTextSearch(query, { type = 'document', limit = 10, filters = 
  */
 async function vectorSearch(query, { type = 'document', limit = 10, threshold = 0.7, filters = {} } = {}) {
   try {
+    // Get or generate the query embedding
     const queryEmbedding = Array.isArray(query)
       ? query
       : await getJinaEmbedding(query);
-
-    const queryEmbeddingJson = JSON.stringify(queryEmbedding);
-
-    // Vector search should always target the documents table.
-    // The 'type' parameter is used to filter by category.
+    
+    // Convert embedding to TiDB vector format
+    const vectorString = `[${queryEmbedding.join(',')}]`;
+    
+    // Build WHERE clauses
     const whereClauses = ['embedding IS NOT NULL'];
-    const queryParams = [queryEmbeddingJson];
-
+    const queryParams = [vectorString, vectorString]; // Used twice in the query
+    
     if (type && type !== 'all') {
       whereClauses.push('category = ?');
       queryParams.push(type);
     }
-
-    queryParams.push(Number(limit));
-
+    
+    // Add any additional filters
+    if (filters) {
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          whereClauses.push(`${key} = ?`);
+          queryParams.push(value);
+        }
+      });
+    }
+    
+    // Add limit to params
+    queryParams.push(limit);
+    
+    // Execute the vector search query
     const results = await prisma.$queryRawUnsafe(
-      `SELECT id, title, content, category, created_at, VEC_COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024))) as distance
+      `SELECT 
+          id, 
+          title, 
+          content, 
+          category, 
+          created_at,
+          VEC_COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024))) as distance
        FROM documents
        WHERE ${whereClauses.join(' AND ')}
        ORDER BY distance ASC
        LIMIT ?`,
-      ...queryParams
+      queryParams
     );
-
+    
+    // Process and filter results
     return results
-      .map(r => {
-        const { distance, ...rest } = r;
-        return {
-          ...rest,
-          score: 1 - distance,
-          content: `${r.title}: ${r.content}`.substring(0, 200) + (`${r.title}: ${r.content}`.length > 200 ? '...' : '')
-        };
-      })
+      .map(r => ({
+        id: r.id,
+        title: r.title,
+        content: r.content,
+        category: r.category,
+        createdAt: r.created_at,
+        score: 1 - parseFloat(r.distance || 1), // Convert distance to similarity score
+        distance: parseFloat(r.distance || 1)
+      }))
       .filter(r => r.score >= threshold);
-
+      
   } catch (error) {
-    logger.error({ error: error.message, query }, 'Vector search failed');
+    logger.error({ 
+      error: error.message, 
+      query: typeof query === 'string' ? query : '[vector]',
+      stack: error.stack 
+    }, 'Vector search failed');
     return [];
   }
 }
@@ -436,6 +472,7 @@ module.exports = {
   SEARCH_TYPES,
   fullTextSearch,
   vectorSearch,
-  healthCheck
+  healthCheck,
+  getJinaEmbedding
 }
 

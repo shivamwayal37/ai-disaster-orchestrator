@@ -1,7 +1,7 @@
 {
-  "timestamp": "2025-09-09T12:01:44.341Z",
-  "testId": "e2e-test-1757419304341",
-  "totalDuration": "20.02s",
+  "timestamp": "2025-09-09T13:46:16.563Z",
+  "testId": "e2e-test-1757425576563",
+  "totalDuration": "60.10s",
   "overallStatus": "PASSED",
   "pipeline": {
     "A→C: Data Ingestion": "PASSED",
@@ -10,9 +10,9 @@
     "J→K: Action Pipeline": "PASSED"
   },
   "performance": {
-    "ingestionTime": "4.70s",
-    "embeddingTime": "0.65s",
-    "orchestrationTime": "14.66s",
+    "ingestionTime": "5.19s",
+    "embeddingTime": "1.53s",
+    "orchestrationTime": "53.38s",
     "actionTime": "0.00s"
   },
   "dataFlow": {
@@ -33,6 +33,7 @@
   },
   "errors": [],
   "recommendations": [
+    "Consider optimizing pipeline performance for faster response times",
     "Increase training data for better retrieval accuracy",
     "Set up automated E2E testing in CI/CD pipeline",
     "Monitor pipeline performance in production with metrics dashboard",
