@@ -6,11 +6,81 @@
 const { prisma } = require('../db');
 const pino = require('pino');
 const { getVectorStore } = require('../services/vectorStore');
-const { initializeRedisClient } = require('../utils/cache');
+const redis = require('redis');
 const { v4: uuidv4 } = require('uuid');
 
 const logger = pino({ name: 'db-insert' });
 const vectorStore = getVectorStore();
+
+// Singleton Redis client with better error handling
+class RedisManager {
+    constructor() {
+        this.client = null;
+        this.isConnecting = false;
+    }
+
+    async getClient() {
+        if (this.client && this.client.isOpen) {
+            return this.client;
+        }
+
+        if (this.isConnecting) {
+            // Wait for existing connection attempt
+            await this.waitForConnection();
+            return this.client;
+        }
+
+        return this.connect();
+    }
+
+    async connect() {
+        if (this.isConnecting) return;
+        
+        this.isConnecting = true;
+        
+        try {
+            this.client = redis.createClient({
+                url: process.env.REDIS_URL || 'redis://localhost:6379',
+                socket: {
+                    reconnectStrategy: (retries) => {
+                        if (retries > 10) return false;
+                        return Math.min(retries * 100, 3000);
+                    }
+                }
+            });
+
+            this.client.on('error', (error) => {
+                logger.error(`Redis client error: ${error.message}`);
+            });
+
+            this.client.on('connect', () => {
+                logger.info('Redis client connected');
+            });
+
+            this.client.on('ready', () => {
+                logger.info('Redis client ready');
+            });
+
+            await this.client.connect();
+            this.isConnecting = false;
+            return this.client;
+            
+        } catch (error) {
+            this.isConnecting = false;
+            logger.error(`Redis connection failed: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async waitForConnection(timeout = 5000) {
+        const start = Date.now();
+        while (this.isConnecting && Date.now() - start < timeout) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    }
+}
+
+const redisManager = new RedisManager();
 
 require('../utils/bigIntSerialization');
 
@@ -124,43 +194,40 @@ async function insertAlert(normalizedAlert, kimiProcessed = null) {
  * @returns {Promise<boolean>} True if queued successfully
  */
 async function queueEmbeddingTask(documentId, text) {
-  if (!documentId || !text) {
-    logger.warn({ documentId, hasText: !!text }, 'Invalid arguments for queueEmbeddingTask');
-    return false;
-  }
+    if (!documentId || !text) {
+        logger.warn({ documentId, hasText: !!text }, 'Invalid arguments for queueEmbeddingTask');
+        return false;
+    }
 
-  try {
-    const redisClient = initializeRedisClient();
-    
-    // Create job payload matching Python worker expectations
-    const jobPayload = {
-      id: documentId,           // Python worker expects 'id' field
-      content: text.substring(0, 10000),  // Limit text length
-      timestamp: new Date().toISOString(),
-      model: 'jina-embeddings-v2-base-en',
-      dimensions: 1024          // Updated to match Python worker expectation
-    };
+    try {
+        const redisClient = await redisManager.getClient();
+        
+        const jobPayload = {
+            id: documentId,
+            content: text.substring(0, 8000), // Reasonable limit
+            timestamp: new Date().toISOString(),
+            model: 'jina-embeddings-v3',
+            dimensions: 1024
+        };
 
-    // Push job to Redis queue (left push for FIFO with brpop)
-    await redisClient.lpush('embedding-queue', JSON.stringify(jobPayload));
+        await redisClient.lPush('embedding-queue', JSON.stringify(jobPayload));
 
-    logger.debug({ 
-      documentId,
-      textLength: text.length,
-      queueName: 'embedding-queue'
-    }, 'Embedding task queued successfully to Redis');
-    
-    return true;
-  } catch (error) {
-    logger.error({ 
-      error: error.message,
-      documentId,
-      stack: error.stack 
-    }, 'Failed to queue embedding task to Redis');
-    
-    // Don't rethrow - allow ingestion to continue even if queueing fails
-    return false;
-  }
+        logger.debug({ 
+            documentId,
+            textLength: text.length,
+            queueName: 'embedding-queue'
+        }, 'Embedding task queued successfully');
+        
+        return true;
+    } catch (error) {
+        logger.error({ 
+            error: error.message,
+            documentId,
+            stack: error.stack 
+        }, 'Failed to queue embedding task');
+        
+        return false;
+    }
 }
 
 /**

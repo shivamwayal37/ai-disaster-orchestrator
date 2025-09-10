@@ -23,69 +23,133 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 /**
- * Get embedding from Jina API with caching
+ * Get embedding from Jina API with caching and retries
  * @param {string|string[]} input - Text or array of texts to get embeddings for
+ * @param {Object} [options] - Additional options
+ * @param {number} [options.maxRetries=3] - Maximum number of retry attempts
+ * @param {number} [options.timeout=30000] - Request timeout in ms
  * @returns {Promise<number[]|number[][]>} - Single embedding vector or array of vectors
  */
-async function getJinaEmbedding(input) {
-  const MAX_INPUT_LENGTH = 512;
+async function getJinaEmbedding(input, { maxRetries = 3, timeout = 30000 } = {}) {
+  const MAX_INPUT_LENGTH = 8000;  // Increased from 512 to 8000 for better context
   const isBatch = Array.isArray(input);
+  
+  // Validate input
+  if (!input || (isBatch && input.length === 0)) {
+    throw new Error('Input cannot be empty');
+  }
   
   // Handle both single string and array of strings
   const truncatedInput = isBatch
     ? input.map(txt => String(txt).slice(0, MAX_INPUT_LENGTH))
     : String(input).slice(0, MAX_INPUT_LENGTH);
 
-  // Create appropriate cache key
-  const cacheKey = isBatch
-    ? `embedding:batch:${truncatedInput.join('|')}`
-    : `embedding:${truncatedInput}`;
-
-  try {
-    const cachedEmbedding = await redisClient.get(cacheKey);
-    if (cachedEmbedding) {
-      logger.info({ isBatch, query: truncatedInput }, 'Embedding cache hit');
-      return JSON.parse(cachedEmbedding);
+  // Create appropriate cache key with hash to avoid long keys
+  const inputHash = require('crypto')
+    .createHash('md5')
+    .update(JSON.stringify(truncatedInput))
+    .digest('hex');
+  
+  const cacheKey = `embed:${isBatch ? 'batch:' : ''}${inputHash}`;
+  
+  // Try to get from cache if Redis is available
+  if (redisClient.isOpen) {
+    try {
+      const cached = await redisClient.get(cacheKey);
+      if (cached) {
+        logger.debug({ cacheKey, isBatch }, 'Embedding cache hit');
+        return JSON.parse(cached);
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, 'Cache read failed, proceeding without cache');
     }
-  } catch (err) {
-    logger.error({ err }, 'Redis GET failed for embedding cache');
   }
 
-  logger.info({ isBatch, query: truncatedInput }, 'Embedding cache miss, fetching from API');
+  logger.debug({ isBatch, inputLength: isBatch ? input.length : input?.length }, 'Generating new embedding');
   
   const payload = {
     model: "jina-embeddings-v3",
     task: "text-matching",
     dimensions: 1024,
-    input: isBatch ? truncatedInput : [truncatedInput]  // Ensure input is always an array for the API
+    input: isBatch ? truncatedInput : [truncatedInput]
   };
 
-  const resp = await fetch("https://api.jina.ai/v1/embeddings", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.JINA_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`Jina API error ${resp.status}: ${err}`);
+  let lastError;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    try {
+      const response = await fetch("https://api.jina.ai/v1/embeddings", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.JINA_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorBody}`);
+      }
+      
+      const data = await response.json();
+      
+      if (!data.data || !Array.isArray(data.data)) {
+        throw new Error('Invalid response format from embedding service');
+      }
+      
+      const embeddings = data.data.map(d => d.embedding);
+      const result = isBatch ? embeddings : embeddings[0];
+      
+      // Cache the result if Redis is available
+      if (redisClient.isOpen) {
+        try {
+          await redisClient.set(cacheKey, JSON.stringify(result), { 
+            EX: 3600 // Cache for 1 hour
+          });
+        } catch (cacheErr) {
+          logger.warn({ err: cacheErr.message }, 'Failed to cache embedding');
+        }
+      }
+      
+      return result;
+      
+    } catch (error) {
+      lastError = error;
+      const isLastAttempt = attempt === maxRetries;
+      
+      if (error.name === 'AbortError') {
+        logger.warn(`Attempt ${attempt}/${maxRetries}: Request timed out after ${timeout}ms`);
+      } else {
+        logger.warn(`Attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+      }
+      
+      if (isLastAttempt) {
+        logger.error({
+          error: error.message,
+          stack: error.stack,
+          input: isBatch ? '[batch]' : truncatedInput.substring(0, 100) + (truncatedInput.length > 100 ? '...' : '')
+        }, 'All embedding generation attempts failed');
+        throw new Error(`Failed to generate embedding after ${maxRetries} attempts: ${error.message}`);
+      }
+      
+      // Exponential backoff with jitter
+      const baseDelay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+      const jitter = Math.random() * 1000;
+      await new Promise(resolve => setTimeout(resolve, baseDelay + jitter));
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
-
-  const data = await resp.json();
-  const embeddings = data.data.map(d => d.embedding);
-  const result = isBatch ? embeddings : embeddings[0];
-
-  try {
-    // Cache the result for 1 hour
-    await redisClient.set(cacheKey, JSON.stringify(result), { EX: 3600 });
-  } catch (err) {
-    logger.error({ err }, 'Redis SET failed for embedding cache');
-  }
-
-  return result;
+  
+  // This should theoretically never be reached due to the throw in the loop
+  throw lastError || new Error('Unexpected error in getJinaEmbedding');
 }
 
 /**
