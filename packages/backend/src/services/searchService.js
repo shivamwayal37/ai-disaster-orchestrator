@@ -1,5 +1,5 @@
 /**
- * Enhanced Search Service (Day 4)
+ * Enhanced Search Service (Day 4) - TiDB COMPATIBLE VERSION
  * Hybrid search: vector + keyword + filters
  */
 
@@ -24,27 +24,19 @@ if (process.env.NODE_ENV !== 'test') {
 
 /**
  * Get embedding from Jina API with caching and retries
- * @param {string|string[]} input - Text or array of texts to get embeddings for
- * @param {Object} [options] - Additional options
- * @param {number} [options.maxRetries=3] - Maximum number of retry attempts
- * @param {number} [options.timeout=30000] - Request timeout in ms
- * @returns {Promise<number[]|number[][]>} - Single embedding vector or array of vectors
  */
 async function getJinaEmbedding(input, { maxRetries = 3, timeout = 30000 } = {}) {
-  const MAX_INPUT_LENGTH = 8000;  // Increased from 512 to 8000 for better context
+  const MAX_INPUT_LENGTH = 8000;
   const isBatch = Array.isArray(input);
   
-  // Validate input
   if (!input || (isBatch && input.length === 0)) {
     throw new Error('Input cannot be empty');
   }
   
-  // Handle both single string and array of strings
   const truncatedInput = isBatch
     ? input.map(txt => String(txt).slice(0, MAX_INPUT_LENGTH))
     : String(input).slice(0, MAX_INPUT_LENGTH);
 
-  // Create appropriate cache key with hash to avoid long keys
   const inputHash = require('crypto')
     .createHash('md5')
     .update(JSON.stringify(truncatedInput))
@@ -52,7 +44,6 @@ async function getJinaEmbedding(input, { maxRetries = 3, timeout = 30000 } = {})
   
   const cacheKey = `embed:${isBatch ? 'batch:' : ''}${inputHash}`;
   
-  // Try to get from cache if Redis is available
   if (redisClient.isOpen) {
     try {
       const cached = await redisClient.get(cacheKey);
@@ -107,11 +98,10 @@ async function getJinaEmbedding(input, { maxRetries = 3, timeout = 30000 } = {})
       const embeddings = data.data.map(d => d.embedding);
       const result = isBatch ? embeddings : embeddings[0];
       
-      // Cache the result if Redis is available
       if (redisClient.isOpen) {
         try {
           await redisClient.set(cacheKey, JSON.stringify(result), { 
-            EX: 3600 // Cache for 1 hour
+            EX: 3600
           });
         } catch (cacheErr) {
           logger.warn({ err: cacheErr.message }, 'Failed to cache embedding');
@@ -139,7 +129,6 @@ async function getJinaEmbedding(input, { maxRetries = 3, timeout = 30000 } = {})
         throw new Error(`Failed to generate embedding after ${maxRetries} attempts: ${error.message}`);
       }
       
-      // Exponential backoff with jitter
       const baseDelay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
       const jitter = Math.random() * 1000;
       await new Promise(resolve => setTimeout(resolve, baseDelay + jitter));
@@ -148,250 +137,361 @@ async function getJinaEmbedding(input, { maxRetries = 3, timeout = 30000 } = {})
     }
   }
   
-  // This should theoretically never be reached due to the throw in the loop
   throw lastError || new Error('Unexpected error in getJinaEmbedding');
 }
 
 /**
- * Full-text search (fallback / baseline)
+ * Full-text search using native MySQL/TiDB MATCH ... AGAINST syntax
+ * Leverages FULLTEXT indexes for better performance and relevance
  */
-const DISASTER_TYPES = ['earthquake', 'wildfire', 'flood', 'cyclone', 'other', 'disaster'];
-
-const MODEL_MAP = {
-  document: (q) => prisma.document.findMany(q),
-  alert: (q) => prisma.alert.findMany(q),
-  resource: (q) => prisma.resource.findMany(q),
-  protocol: (q) => prisma.document.findMany({ ...q, where: { ...q.where, category: 'protocol' } })
-};
-
-DISASTER_TYPES.forEach(type => {
-  MODEL_MAP[type] = (q) => prisma.document.findMany({
-    ...q,
-    where: { ...q.where, category: type }
-  });
-});
-
 async function fullTextSearch(query, { type = 'document', limit = 10, filters = {} }) {
   try {
-    const searchCondition = {
-      OR: [
-        { title: { contains: query } },
-        type === 'alert'
-          ? { description: { contains: query } }
-          : { content: { contains: query } }
-      ]
-    };
-
-    const transformedFilters = { ...filters };
-    if (type === 'alert' && 'status' in transformedFilters) {
-      transformedFilters.isActive = transformedFilters.status === 'ACTIVE';
-      delete transformedFilters.status;
+    logger.debug({ query, type, limit, filters }, 'Starting full-text search');
+    
+    if (!query || query.trim().length === 0) {
+      return [];
     }
 
-    const whereClause = Object.keys(transformedFilters).length > 0
-      ? { AND: [searchCondition, transformedFilters] }
-      : searchCondition;
-
-    if (!MODEL_MAP[type]) {
-      throw new Error(`Unsupported search type: ${type}`);
+    // Get embedding for the query
+    const embedding = await getJinaEmbedding(query);
+    const vectorString = `[${embedding.join(',')}]`;
+    
+    // Build WHERE clauses for filters
+    const whereClauses = [];
+    const queryParams = [];
+    
+    // Add type-specific filters
+    if (filters.category) {
+      whereClauses.push('category = ?');
+      queryParams.push(filters.category);
+    }
+    
+    if (type === 'alert') {
+      if (filters.alert_type) {
+        whereClauses.push('alert_type = ?');
+        queryParams.push(filters.alert_type);
+      }
+      if (filters.severity) {
+        whereClauses.push('severity = ?');
+        queryParams.push(filters.severity);
+      }
+      if (filters.status === 'ACTIVE') {
+        whereClauses.push('is_active = TRUE');
+      } else if (filters.status === 'INACTIVE') {
+        whereClauses.push('is_active = FALSE');
+      }
     }
 
-    return await MODEL_MAP[type]({
-      where: whereClause,
-      take: limit
-    });
+    // Date range filters
+    if (filters.startDate) {
+      whereClauses.push('created_at >= ?');
+      queryParams.push(new Date(filters.startDate).toISOString().slice(0, 19).replace('T', ' '));
+    }
+    if (filters.endDate) {
+      whereClauses.push('created_at <= ?');
+      queryParams.push(new Date(filters.endDate).toISOString().slice(0, 19).replace('T', ' '));
+    }
+
+    let results = [];
+    
+    if (type === 'alert') {
+      // Search in alerts table using vector similarity
+      const sql = `
+        SELECT 
+          id, 
+          title, 
+          description as content, 
+          alert_type as category, 
+          severity, 
+          location, 
+          created_at,
+          VEC_COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024))) as distance
+        FROM alerts
+        WHERE ${whereClauses.length ? whereClauses.join(' AND ') : '1=1'}
+        ORDER BY distance ASC
+        LIMIT ?
+      `;
+      
+      results = await prisma.$queryRawUnsafe(sql, vectorString, ...queryParams, limit);
+    } else {
+      // Search in documents table using vector similarity
+      const sql = `
+        SELECT 
+          id, 
+          title, 
+          content, 
+          category, 
+          summary, 
+          created_at,
+          VEC_COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024))) as distance
+        FROM documents
+        WHERE ${whereClauses.length ? whereClauses.join(' AND ') : '1=1'}
+        ORDER BY distance ASC
+        LIMIT ?
+      `;
+      
+      results = await prisma.$queryRawUnsafe(sql, vectorString, ...queryParams, limit);
+    }
+
+    logger.debug({ count: results.length, query, type }, 'Full-text search completed');
+    return results.map(r => ({
+      ...r,
+      type,
+      score: parseFloat(r.score) || 1.0,
+      // Ensure consistent field names with Prisma model
+      ...(r.category === undefined && r.alert_type && { category: r.alert_type })
+    }));
 
   } catch (error) {
-    logger.error({ error: error.message, query }, 'Full-text search failed');
+    logger.error({ 
+      error: error.message, 
+      stack: error.stack, 
+      query, 
+      type 
+    }, 'Full-text search failed');
     return [];
   }
 }
 
 /**
- * Vector similarity search using Jina embeddings
- * @param {string|number[]} query - Search query text or pre-computed embedding
- * @param {Object} options - Search options
- * @param {string} [options.type='document'] - Type of content to search
- * @param {number} [options.limit=10] - Maximum number of results
- * @param {number} [options.threshold=0.7] - Similarity threshold (0-1)
- * @param {Object} [options.filters={}] - Additional filters
- * @returns {Promise<Array>} Search results
+ * Vector similarity search using proper TiDB syntax
  */
-async function vectorSearch(query, { type = 'document', limit = 10, threshold = 0.7, filters = {} } = {}) {
+async function vectorSearch(query, { type = 'document', limit = 10, threshold = 0.3, filters = {} } = {}) {
   try {
-    // Get or generate the query embedding
-    const queryEmbedding = Array.isArray(query)
-      ? query
-      : await getJinaEmbedding(query);
+    logger.debug({ query, type, limit, threshold, filters }, 'Starting vector search');
     
-    // Convert embedding to TiDB vector format
-    const vectorString = `[${queryEmbedding.join(',')}]`;
+    const embedding = await getJinaEmbedding(query);
+    const vectorString = `[${embedding.join(',')}]`;
     
-    // Build WHERE clauses
+    // Determine table and fields based on type
+    let tableName, selectFields;
+    if (type === 'alert') {
+      tableName = 'alerts';
+      selectFields = 'id, title, description as content, alert_type as category, severity, location, created_at';
+    } else {
+      tableName = 'documents';
+      selectFields = 'id, title, content, category, summary, created_at';
+    }
+    
+    // Build WHERE clauses for filters
     const whereClauses = ['embedding IS NOT NULL'];
-    const queryParams = [vectorString, vectorString]; // Used twice in the query
+    const queryParams = [];
     
-    if (type && type !== 'all') {
+    // Type-specific filters
+    if (type === 'document' && filters.category) {
       whereClauses.push('category = ?');
-      queryParams.push(type);
+      queryParams.push(filters.category);
+    } else if (type === 'alert') {
+      if (filters.alert_type) {
+        whereClauses.push('alert_type = ?');
+        queryParams.push(filters.alert_type);
+      }
+      if (filters.severity) {
+        whereClauses.push('severity = ?');
+        queryParams.push(filters.severity);
+      }
+      if (filters.status === 'ACTIVE') {
+        whereClauses.push('is_active = true');
+      } else if (filters.status === 'INACTIVE') {
+        whereClauses.push('is_active = false');
+      }
     }
     
-    // Add any additional filters
-    if (filters) {
-      Object.entries(filters).forEach(([key, value]) => {
-        if (value !== undefined && value !== null) {
-          whereClauses.push(`${key} = ?`);
-          queryParams.push(value);
-        }
-      });
+    // Date range filters
+    if (filters.startDate) {
+      whereClauses.push('created_at >= ?');
+      queryParams.push(new Date(filters.startDate).toISOString().slice(0, 19).replace('T', ' '));
+    }
+    if (filters.endDate) {
+      whereClauses.push('created_at <= ?');
+      queryParams.push(new Date(filters.endDate).toISOString().slice(0, 19).replace('T', ' '));
     }
     
-    // Add limit to params
-    queryParams.push(limit);
+    const sql = `
+      SELECT 
+        ${selectFields},
+        VEC_COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024))) as distance
+      FROM ${tableName}
+      WHERE ${whereClauses.join(' AND ')}
+      ORDER BY distance ASC
+      LIMIT ?
+    `;
     
-    // Execute the vector search query
-    const results = await prisma.$queryRawUnsafe(
-      `SELECT 
-          id, 
-          title, 
-          content, 
-          category, 
-          created_at,
-          VEC_COSINE_DISTANCE(embedding, CAST(? AS VECTOR(1024))) as distance
-       FROM documents
-       WHERE ${whereClauses.join(' AND ')}
-       ORDER BY distance ASC
-       LIMIT ?`,
-      queryParams
-    );
+    const allParams = [vectorString, ...queryParams, limit];
     
-    // Process and filter results
-    return results
-      .map(r => ({
-        id: r.id,
-        title: r.title,
-        content: r.content,
-        category: r.category,
-        createdAt: r.created_at,
-        score: 1 - parseFloat(r.distance || 1), // Convert distance to similarity score
-        distance: parseFloat(r.distance || 1)
+    logger.debug({ sql, paramCount: allParams.length }, 'Executing vector search query');
+    
+    // Execute raw query
+    const results = await prisma.$queryRawUnsafe(sql, ...allParams);
+    
+    const processedResults = results
+      .map(row => ({
+        id: Number(row.id),
+        title: row.title,
+        content: row.content || row.description,
+        category: row.category || row.alert_type,
+        summary: row.summary,
+        location: row.location,
+        severity: row.severity,
+        createdAt: row.created_at,
+        similarity: 1 - parseFloat(row.distance || 1),
+        distance: parseFloat(row.distance || 1),
+        score: 1 - parseFloat(row.distance || 1),
+        type
       }))
-      .filter(r => r.score >= threshold);
+      .filter(r => r.similarity >= threshold);
+
+    logger.debug({ count: processedResults.length, avgScore: processedResults.reduce((sum, r) => sum + r.score, 0) / processedResults.length || 0 }, 'Vector search completed');
+    return processedResults;
       
   } catch (error) {
     logger.error({ 
       error: error.message, 
+      stack: error.stack,
       query: typeof query === 'string' ? query : '[vector]',
-      stack: error.stack 
+      type
     }, 'Vector search failed');
     return [];
   }
 }
 
 /**
- * Hybrid search combining vector similarity and full-text search
- * @param {string} query - Search query
- * @param {Object} options - Search options
- * @param {number} [options.vectorWeight=0.7] - Weight for vector similarity (0-1)
- * @param {number} [options.textWeight=0.3] - Weight for full-text search (0-1)
- * @param {number} [options.limit=10] - Maximum number of results
- * @returns {Promise<Array>} Search results with combined scores
+ * Result merger utility with better scoring
  */
-// --- Result merger utility ---
 function mergeResults(vectorResults = [], textResults = [], limit = 10) {
   const seen = new Set();
   const merged = [];
 
-  // Normalize both arrays into a common format { id, score, ... }
-  const allResults = [...vectorResults, ...textResults];
+  // Prioritize vector results (higher quality semantic matches)
+  const allResults = [
+    ...vectorResults.map(r => ({ ...r, source: 'vector', score: r.score || r.similarity || 0 })),
+    ...textResults.map(r => ({ ...r, source: 'text', score: (r.score || 0.8) * 0.8 })) // Slightly lower weight for text
+  ];
 
   for (const res of allResults) {
-    const id = res.id || res._id || JSON.stringify(res); // flexible id
+    const id = `${res.type || 'unknown'}-${res.id}`;
     if (!seen.has(id)) {
       seen.add(id);
       merged.push(res);
     }
   }
 
-  // If score field exists → sort descending
-  if (merged.length > 0 && merged[0].score !== undefined) {
-    merged.sort((a, b) => b.score - a.score);
-  }
+  // Sort by score (descending)
+  merged.sort((a, b) => (b.score || 0) - (a.score || 0));
 
   return merged.slice(0, limit);
 }
 
+/**
+ * Type normalization
+ */
 function normalizeSearchType(type) {
-  const fallbackMap = { 
+  const typeMap = { 
     disaster: 'document',
-    incident: 'alert'
+    incident: 'alert',
+    protocol: 'document',
+    resource: 'document'
   };
-  return fallbackMap[type] || type;
+  return typeMap[type] || type;
 }
 
+/**
+ * Hybrid search with better error handling and caching
+ */
 async function hybridSearch(query, opts = {}) {
-  const { bypassCache = false, type: originalType = 'disaster', limit = 10, filters = {} } = opts;
+  const { bypassCache = false, type: originalType = 'document', limit = 10, filters = {} } = opts;
   const type = normalizeSearchType(originalType);
 
-  // --- 1. Minimal input handling ---
+  logger.debug({ query, type, limit, filters, bypassCache }, 'Starting hybrid search');
+
+  // Handle minimal input
+  if (!query || query.trim().length === 0) {
+    logger.warn({ query }, 'Empty query provided');
+    return [];
+  }
+
   if (query.trim().split(/\s+/).length < 2) {
-    logger.warn({ query }, 'Too minimal input, forcing fallback response.');
+    logger.warn({ query }, 'Minimal input detected, returning rule-based fallback');
     return [{
       id: 'minimal-fallback',
+      title: 'Emergency Protocol Activation',
+      content: 'Minimal input detected. Escalating to emergency protocols.',
       source: 'rule-based',
       similarity: 1.0,
-      riskLevel: 'HIGH',   // force HIGH
+      score: 1.0,
+      riskLevel: 'HIGH',
       fallback: true,
-      final: true,         // new flag to skip post-processing
-      message: 'Minimal input detected. Escalating to emergency protocols.'
+      type
     }];
   }
 
-  // --- 2. Cache check (skip if bypassCache = true) ---
-  if (!bypassCache) {
-    const cacheKey = `hybrid:${query}`;
+  // Cache handling
+  const cacheKey = `hybrid:${type}:${JSON.stringify(filters)}:${query}`;
+  if (!bypassCache && redisClient.isOpen) {
     try {
       const cached = await redisClient.get(cacheKey);
       if (cached) {
-        logger.info({ query }, 'Hybrid search cache hit.');
-        // Add fromCache flag to results retrieved from cache
+        logger.debug({ query, type }, 'Hybrid search cache hit');
         return JSON.parse(cached).map(r => ({ ...r, fromCache: true }));
       }
     } catch (err) {
-      logger.error({ err }, 'Redis GET failed for hybrid search cache');
+      logger.warn({ err: err.message }, 'Cache read failed, proceeding without cache');
     }
   }
 
   try {
-    // --- 3. Parallel full-text + vector search ---
-    const [textResults, vectorResults] = await Promise.all([
+    // Run parallel searches
+    logger.debug({ query, type }, 'Executing parallel searches');
+    const [textResults, vectorResults] = await Promise.allSettled([
       fullTextSearch(query, { type, limit, filters }),
-      vectorSearch(query, { type, limit, filters })
+      vectorSearch(query, { type, limit, threshold: 0.3, filters })
     ]);
 
-    // --- 4. Merge + rank ---
-    const merged = mergeResults(vectorResults, textResults, limit);
+    const validTextResults = textResults.status === 'fulfilled' ? textResults.value : [];
+    const validVectorResults = vectorResults.status === 'fulfilled' ? vectorResults.value : [];
 
-    // --- 5. Store in cache ---
-    if (!bypassCache) {
-      const cacheKey = `hybrid:${query}`;
+    if (textResults.status === 'rejected') {
+      logger.warn({ error: textResults.reason?.message }, 'Text search failed');
+    }
+    if (vectorResults.status === 'rejected') {
+      logger.warn({ error: vectorResults.reason?.message }, 'Vector search failed');
+    }
+
+    // Merge and rank results
+    const merged = mergeResults(validVectorResults, validTextResults, limit);
+
+    logger.debug({ 
+      textCount: validTextResults.length, 
+      vectorCount: validVectorResults.length, 
+      mergedCount: merged.length,
+      query, 
+      type 
+    }, 'Hybrid search completed');
+
+    // Cache successful results
+    if (!bypassCache && merged.length > 0 && redisClient.isOpen) {
       try {
-        await redisClient.set(cacheKey, JSON.stringify(merged), { EX: 3600 });
+        await redisClient.set(cacheKey, JSON.stringify(merged), { EX: 1800 }); // 30 min cache
       } catch (err) {
-        logger.error({ err }, 'Redis SET failed for hybrid search cache');
+        logger.warn({ err: err.message }, 'Cache write failed');
       }
     }
 
     return merged;
-  } catch (err) {
-    logger.error({ err, query }, 'Hybrid search error');
+
+  } catch (error) {
+    logger.error({ error: error.message, stack: error.stack, query, type }, 'Hybrid search error');
     return [{
-      id: 'fallback',
+      id: 'error-fallback',
+      title: 'Search Error - Emergency Protocols',
+      content: 'Error during search operation. Defaulting to emergency response protocols.',
       source: 'rule-based',
       similarity: 0.0,
+      score: 0.0,
       riskLevel: 'HIGH',
       fallback: true,
-      message: 'Error during search, defaulting to emergency protocols.'
+      error: true,
+      type
     }];
   }
 }
@@ -399,6 +499,7 @@ async function hybridSearch(query, opts = {}) {
 // Main search entry point
 async function generateOptimizedActionPlan(query, options = {}) {
   if (Array.isArray(query)) {
+    // Handle vector input directly
     return vectorSearch('', { ...options, vector: query });
   }
   return hybridSearch(query, {
@@ -408,35 +509,12 @@ async function generateOptimizedActionPlan(query, options = {}) {
   });
 }
 
-// Maintain backward compatibility with existing code
-// --- Similar Results (with async cache prefill) ---
-async function findSimilar(query, { type = 'disaster', limit = 10 } = {}) {
+// Specialized search functions
+async function findSimilar(query, { type = 'document', limit = 10 } = {}) {
   const normalized = normalizeQuery(query);
-  const cacheKey = `similar:${type}:${normalized}`;
-
-  try {
-    const cached = await cache.get(cacheKey);
-    if (cached) {
-      logger.info({ query }, 'Cache hit for similar search');
-      return JSON.parse(cached);
-    }
-
-    const results = await hybridSearch(normalized, { type, limit });
-
-    // async prefill for next time
-    if (results && results.length > 0) {
-      cache.set(cacheKey, JSON.stringify(results), { ttl: 60 }).catch(err =>
-        logger.error({ err }, 'Cache prefill failed')
-      );
-    }
-    return results;
-  } catch (err) {
-    logger.error({ err, query }, 'findSimilar failed');
-    return [];
-  }
+  return hybridSearch(normalized, { type, limit });
 }
 
-// Simplified search for similar incidents
 async function searchSimilarIncidents(query, options = {}) {
   return hybridSearch(query, {
     type: 'alert',
@@ -461,6 +539,7 @@ async function searchProtocols(disasterType, options = {}) {
   });
 }
 
+// Constants
 const SEARCH_TYPES = {
   DOCUMENT: 'document',
   ALERT: 'alert',
@@ -468,67 +547,28 @@ const SEARCH_TYPES = {
   PROTOCOL: 'protocol'
 };
 
+// Utility functions
 async function healthCheck() {
   try {
-    await prisma.$queryRaw`SELECT 1`; // Check DB connection
-    const redisPing = await redisClient.ping(); // Check Redis connection
-    return redisPing === 'PONG';
+    await prisma.$queryRaw`SELECT 1`;
+    const redisPing = redisClient.isOpen ? await redisClient.ping() : 'CLOSED';
+    return { database: true, redis: redisPing === 'PONG' };
   } catch (error) {
     logger.error({ error: error.message }, 'Search service health check failed');
-    return false;
+    return { database: false, redis: false };
   }
 }
 
-// --- Timeout wrapper utility ---
-function withTimeout(promise, ms, fallback = []) {
-  return Promise.race([
-    promise,
-    new Promise(resolve => setTimeout(() => resolve(fallback), ms))
-  ]);
-}
-
-// --- Utility: pick first non-empty result from multiple promises ---
-async function firstNonEmpty(promises) {
-  const results = await Promise.allSettled(promises);
-  for (const r of results) {
-    if (r.status === 'fulfilled' && r.value && r.value.length > 0) {
-      return r.value;
-    }
-  }
-  return [];
-}
-
-// --- Query Normalization Helper ---
 function normalizeQuery(query) {
   if (!query) return '';
   return query.length > 500 ? query.slice(0, 500) : query;
 }
 
-function isMinimalInput(query) {
-  const words = query.split(/\s+/);
-  return words.length < 2 && query.length < 10;
-}
-
-// --- Earthquake Specialized Search (parallelized) ---
-async function earthquakeModelSearch(query, options = {}) {
-  const normalized = normalizeQuery(query);
-
-  try {
-    const results = await firstNonEmpty([
-      hybridSearch(normalized, { ...options, filters: { ...options.filters, category: 'earthquake' } }),
-      fullTextSearch(normalized, options)
-    ]);
-    return results;
-  } catch (err) {
-    logger.error({ err, query }, 'Earthquake specialized search failed');
-    return [];
-  }
-}
-
+// Exports
 module.exports = {
   redisClient,
   generateOptimizedActionPlan,
-  generateActionPlan: generateOptimizedActionPlan, // Alias for backward compatibility
+  generateActionPlan: generateOptimizedActionPlan,
   findSimilar,
   hybridSearch,
   searchProtocols,
@@ -537,6 +577,8 @@ module.exports = {
   fullTextSearch,
   vectorSearch,
   healthCheck,
-  getJinaEmbedding
-}
-
+  getJinaEmbedding,
+  mergeResults,
+  normalizeSearchType,
+  normalizeQuery
+};

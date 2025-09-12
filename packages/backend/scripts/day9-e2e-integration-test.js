@@ -272,7 +272,7 @@ class E2EIntegrationTest {
         logger.info('Python3 available for embedding worker');
         
         // Check if embedding worker exists
-        const workerPath = path.join(__dirname, '../../../workers/embedding_worker.py');
+        const workerPath = require('../../../workers/embedding_worker.py');
         if (fs.existsSync(workerPath)) {
           logger.info('Embedding worker found, testing...');
           usingPythonWorker = true;

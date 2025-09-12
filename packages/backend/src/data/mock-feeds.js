@@ -57,7 +57,7 @@ const twitterAlerts = [
   {
     id: "TW_001",
     user: "@MumbaiTraffic",
-    text: "🚨 URGENT: Major flooding reported on Western Express Highway near Andheri. Multiple vehicles stranded. Avoid the area. Emergency services deployed. #MumbaiFloods #TrafficAlert",
+    text: "URGENT: Major flooding reported on Western Express Highway near Andheri. Multiple vehicles stranded. Avoid the area. Emergency services deployed. #MumbaiFloods #TrafficAlert",
     timestamp: "2025-08-28T08:15:00Z",
     location: "Mumbai, Maharashtra",
     coordinates: { lat: 19.120, lng: 72.847 },

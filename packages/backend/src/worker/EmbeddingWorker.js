@@ -33,50 +33,128 @@ class EmbeddingWorker {
     }
 
     /**
-     * Jina Embedding Service functions
+     * Jina Embedding Service function with retries, caching, and batching support
      */
-    async getEmbedding(text, maxRetries = 3) {
-        if (!text || !text.trim()) return null;
+    async getEmbedding(input, { maxRetries = 3, timeout = 30000 } = {}) {
+        const MAX_INPUT_LENGTH = 8000;  // Increased from 512 to 8000 for better context
+        const isBatch = Array.isArray(input);
+        
+        // Validate input
+        if (!input || (isBatch && input.length === 0)) {
+            throw new Error('Input cannot be empty');
+        }
+        
+        // Handle both single string and array of strings
+        const truncatedInput = isBatch
+            ? input.map(txt => String(txt).slice(0, MAX_INPUT_LENGTH))
+            : String(input).slice(0, MAX_INPUT_LENGTH);
 
-        const payload = {
-            model: 'jina-embeddings-v3',
-            task: 'text-matching',
-            dimensions: 1024,
-            input: [text.slice(0, 8000)] // Limit input length
-        };
-
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        // Create appropriate cache key with hash to avoid long keys
+        const inputHash = require('crypto')
+            .createHash('md5')
+            .update(JSON.stringify(truncatedInput))
+            .digest('hex');
+        
+        const cacheKey = `embed:${isBatch ? 'batch:' : ''}${inputHash}`;
+        
+        // Try to get from cache if Redis is available
+        if (this.redisClient?.isOpen) {
             try {
-                const response = await axios.post(
-                    'https://api.jina.ai/v1/embeddings',
-                    payload,
-                    {
-                        headers: {
-                            'Authorization': `Bearer ${this.jinaApiKey}`,
-                            'Content-Type': 'application/json'
-                        },
-                        timeout: 30000
-                    }
-                );
-
-                if (response.status === 200 && response.data?.data?.[0]?.embedding) {
-                    return response.data.data[0].embedding;
+                const cached = await this.redisClient.get(cacheKey);
+                if (cached) {
+                    this.logger.debug({ cacheKey, isBatch }, 'Embedding cache hit');
+                    return JSON.parse(cached);
                 }
-                
-                throw new Error(`API returned ${response.status}`);
-
-            } catch (error) {
-                const isLastAttempt = attempt === maxRetries;
-                
-                if (isLastAttempt) {
-                    this.logger.error({ error }, `Failed to get embedding after ${maxRetries} attempts`);
-                    throw error;
-                }
-
-                const waitTime = Math.min(2 ** attempt * 1000, 10000);
-                await this.sleep(waitTime);
+            } catch (err) {
+                this.logger.warn({ error: err.message }, 'Cache read failed, proceeding without cache');
             }
         }
+
+        this.logger.debug({ isBatch, inputLength: isBatch ? input.length : input?.length }, 'Generating new embedding');
+        
+        const payload = {
+            model: "jina-embeddings-v3",
+            task: "text-matching",
+            dimensions: 1024,
+            input: isBatch ? truncatedInput : [truncatedInput]
+        };
+
+        let lastError;
+        
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            
+            try {
+                const response = await fetch("https://api.jina.ai/v1/embeddings", {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${this.jinaApiKey}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    const errorBody = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorBody}`);
+                }
+                
+                const data = await response.json();
+                
+                if (!data.data || !Array.isArray(data.data)) {
+                    throw new Error('Invalid response format from embedding service');
+                }
+                
+                const embeddings = data.data.map(d => d.embedding);
+                const result = isBatch ? embeddings : embeddings[0];
+                
+                // Cache the result if Redis is available
+                if (this.redisClient?.isOpen) {
+                    try {
+                        await this.redisClient.set(cacheKey, JSON.stringify(result), { 
+                            EX: 3600 // Cache for 1 hour
+                        });
+                    } catch (cacheErr) {
+                        this.logger.warn({ error: cacheErr.message }, 'Failed to cache embedding');
+                    }
+                }
+                
+                return result;
+                
+            } catch (error) {
+                lastError = error;
+                const isLastAttempt = attempt === maxRetries;
+                
+                if (error.name === 'AbortError') {
+                    this.logger.warn(`Attempt ${attempt}/${maxRetries}: Request timed out after ${timeout}ms`);
+                } else {
+                    this.logger.warn(`Attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+                }
+                
+                if (isLastAttempt) {
+                    this.logger.error({
+                        error: error.message,
+                        stack: error.stack,
+                        input: isBatch ? '[batch]' : truncatedInput.substring(0, 100) + (truncatedInput.length > 100 ? '...' : '')
+                    }, 'All embedding generation attempts failed');
+                    throw new Error(`Failed to generate embedding after ${maxRetries} attempts: ${error.message}`);
+                }
+                
+                // Exponential backoff with jitter
+                const baseDelay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+                const jitter = Math.random() * 1000;
+                await this.sleep(baseDelay + jitter);
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+        
+        // This should theoretically never be reached due to the throw in the loop
+        throw lastError || new Error('Unexpected error in getEmbedding');
     }
 
     /**
@@ -84,55 +162,36 @@ class EmbeddingWorker {
      */
     async updateDocumentEmbedding(documentId, embedding) {
         try {
-            // Convert embedding to JSON string for TiDB VECTOR type
-            const embeddingJson = JSON.stringify(embedding);
-            
-            const updated = await this.prisma.document.update({
-                where: { id: documentId },
-                data: { 
-                    embedding: embeddingJson,
-                    updatedAt: new Date()
-                }
-            });
+            this.logger.info({ 
+                documentId, 
+                embeddingLength: embedding.length 
+            }, 'Updating document embedding');
 
-            return !!updated;
+            // Convert embedding array to TiDB VECTOR format
+            const vectorString = `[${embedding.join(',')}]`;
+            
+            // Use Prisma's raw query to handle VECTOR type properly
+            const result = await this.prisma.$executeRaw`
+                UPDATE documents 
+                SET embedding = CAST(${vectorString} AS VECTOR(1024)),
+                    updated_at = ${new Date()}
+                WHERE id = ${documentId}
+            `;
+
+            this.logger.info({ 
+                documentId, 
+                updated: result 
+            }, 'Successfully updated document embedding');
+
+            return result > 0;
         } catch (error) {
-            this.logger.error({ error, documentId }, 'Error updating document');
+            this.logger.error({ error, documentId }, 'Error updating document embedding');
             return false;
         }
     }
 
-    async updateAlertEmbedding(alertId, embedding) {
-        if (!this.prisma) {
-            throw new Error('Prisma client not initialized');
-        }
-
-        let connection = null;
-        try {
-            connection = await this.dbPool.getConnection();
-            
-            const query = `
-                UPDATE documents 
-                SET embedding = ?, updated_at = ?
-                WHERE id = ?
-            `;
-            
-            // Convert embedding array to JSON string for TiDB VECTOR type
-            const embeddingStr = JSON.stringify(embedding);
-            const currentTime = new Date();
-            
-            const [result] = await connection.execute(query, [embeddingStr, currentTime, alertId]);
-            
-            return result.affectedRows > 0;
-
-        } catch (error) {
-            this.logger.error({ error, alertId }, 'Error updating document embedding');
-            return false;
-        } finally {
-            if (connection) {
-                connection.release();
-            }
-        }
+    async updateAlertEmbedding(documentId, embedding) {
+        return this.updateDocumentEmbedding(documentId, embedding);
     }
 
     /**
@@ -189,34 +248,36 @@ class EmbeddingWorker {
     }
 
     async processJob(jobData) {
-        const alertId = jobData?.id;
+        const documentId = jobData?.id;  // This should be document ID, not alert ID
         const content = jobData?.content;
 
-        if (!alertId || !content) {
+        if (!documentId || !content) {
             this.logger.error({ jobData }, 'Invalid job format');
             return false;
         }
 
         try {
+            this.logger.info({ documentId, contentLength: content.length }, 'Processing embedding job');
+
             const embedding = await this.getEmbedding(content);
             
             if (!embedding || !Array.isArray(embedding) || embedding.length !== 1024) {
-                this.logger.error({ alertId }, 'Failed to generate a valid embedding');
+                this.logger.error({ documentId }, 'Failed to generate a valid embedding');
                 return false;
             }
 
-            const success = await this.updateAlertEmbedding(alertId, embedding);
+            const success = await this.updateDocumentEmbedding(documentId, embedding);
             
             if (success) {
-                this.logger.info({ alertId }, 'Successfully stored embedding');
+                this.logger.info({ documentId }, 'Successfully stored embedding');
             } else {
-                this.logger.error({ alertId }, 'Failed to store embedding in database');
+                this.logger.error({ documentId }, 'Failed to store embedding in database');
             }
             
             return success;
 
         } catch (error) {
-            this.logger.error({ error, alertId }, 'Failed to store embedding');
+            this.logger.error({ error, documentId }, 'Failed to store embedding');
             return false;
         }
     }
@@ -224,18 +285,13 @@ class EmbeddingWorker {
     async run() {
         try {
             await this.connectRedis();
-            await this.initializeDatabasePool();
             
             this.logger.info({ queueName: this.queueName, batchSize: this.batchSize }, 'Worker started');
 
             while (true) {
                 try {
                     // Blocking pop from the right of the list (5 second timeout)
-                    const result = await this.redisClient.brPop(
-                        redis.commandOptions({ isolated: true }),
-                        this.queueName,
-                        5
-                    );
+                    const result = await this.redisClient.brPop(this.queueName, 5);
 
                     if (!result) {
                         continue; // Timeout, continue listening
@@ -251,12 +307,20 @@ class EmbeddingWorker {
                     }
 
                 } catch (error) {
-                    if (error.message.includes('cancelled') || error.name === 'AbortError') {
+                    if (error?.message?.includes('cancelled') || error?.name === 'AbortError') {
                         this.logger.info('Worker shutdown requested');
                         break;
                     }
                     
-                    this.logger.error({ error }, 'Error in worker loop');
+                    this.logger.error({
+                        message: error?.message || 'Unknown error',
+                        name: error?.name || 'Error',
+                        stack: error?.stack,
+                        code: error?.code,
+                        statusCode: error?.statusCode,
+                        details: error?.details || {}
+                    }, 'Error in worker loop');
+                    
                     await this.sleep(5000); // Prevent rapid-fire errors
                 }
             }
@@ -282,12 +346,12 @@ class EmbeddingWorker {
         }
 
         try {
-            if (this.dbPool) {
-                await this.dbPool.end();
-                this.logger.debug('Database pool closed');
+            if (this.prisma) {
+                await this.prisma.$disconnect();
+                this.logger.debug('Prisma connection closed');
             }
         } catch (error) {
-            this.logger.error({ error }, 'Error closing database pool');
+            this.logger.error({ error }, 'Error closing Prisma connection');
         }
 
         this.logger.info('Worker shutdown complete');
@@ -305,11 +369,70 @@ class EmbeddingWorker {
     }
 }
 
+/**
+ * Main entry point
+ */
+async function main() {
+    const logger = require('../utils/logger');
+    
+    // Handle graceful shutdown
+    let worker = null;
+    
+    const shutdown = async (signal) => {
+        logger.info({ signal }, 'Shutdown signal received');
+        
+        if (worker) {
+            await worker.cleanup();
+        }
+        
+        process.exit(0);
+    };
+    
+    // Register shutdown handlers
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    
+    try {
+        // Parse command line arguments
+        const args = process.argv.slice(2);
+        const options = {};
+        
+        // Parse options from command line
+        for (let i = 0; i < args.length; i += 2) {
+            const key = args[i]?.replace('--', '');
+            const value = args[i + 1];
+            
+            if (key && value) {
+                options[key] = value;
+            }
+        }
+        
+        logger.info({ options }, 'Starting Embedding Worker');
+        
+        // Create and start worker
+        worker = new EmbeddingWorker(options);
+        await worker.run();
+        
+    } catch (error) {
+        logger.fatal({ error: error.message, stack: error.stack }, 'Fatal error in embedding worker');
+        process.exit(1);
+    }
+}
+
+// Run if this file is executed directly
+if (require.main === module) {
+    main().catch(error => {
+        console.error('Fatal error:', error);
+        process.exit(1);
+    });
+}
+
+// Export for use as module or run directly
 module.exports = EmbeddingWorker;
 
 // if (require.main === module) {
-//     const logger = require('../utils/logger');
 //     main().catch(error => {
+//         const logger = require('../utils/logger');
 //         logger.fatal({ error }, 'Fatal error in main');
 //         process.exit(1);
 //     });

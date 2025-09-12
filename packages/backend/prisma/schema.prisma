@@ -9,22 +9,22 @@ datasource db {
 }
 
 model Alert {
-  id          BigInt                       @id @default(autoincrement())
-  source      String                       @db.VarChar(100)
-  alertType   String                       @map("alert_type") @db.VarChar(100)
-  title       String                       @db.VarChar(255)
-  description String                       @db.Text
-  severity    Int                          @db.TinyInt
-  location    String?                      @db.VarChar(255)
+  id          BigInt    @id @default(autoincrement())
+  source      String    @db.VarChar(100)
+  alertType   String    @map("alert_type") @db.VarChar(100)
+  title       String    @db.VarChar(255)
+  description String    @db.Text
+  severity    Int       @db.TinyInt
+  location    String?   @db.VarChar(255)
   latitude    Float?
   longitude   Float?
-  startTime   DateTime                     @map("start_time")
-  endTime     DateTime?                    @map("end_time")
-  isActive    Boolean                      @default(true) @map("is_active")
-  rawData     Json?                        @map("raw_data")
-  createdAt   DateTime                     @default(now()) @map("created_at")
-  updatedAt   DateTime                     @updatedAt @map("updated_at")
-  alert_uid   String                       @db.VarChar(64)
+  startTime   DateTime  @map("start_time")
+  endTime     DateTime? @map("end_time")
+  isActive    Boolean   @default(true) @map("is_active")
+  rawData     Json?     @map("raw_data")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  alert_uid   String    @db.VarChar(64)
   embedding   Unsupported("vector(1024)")?
   documents   Document[]
 
@@ -37,74 +37,64 @@ model Alert {
 }
 
 model Document {
-  id                  BigInt                       @id @default(autoincrement())
-  title               String                       @db.VarChar(255)
-  content             String                       @db.Text
-  summary             String?                      @db.Text
-  location            String?                      @db.VarChar(255)
-  category            String                       @db.VarChar(100)
-  sourceUrl           String?                      @map("source_url") @db.VarChar(500)
-  mediaUrl            String?                      @map("media_url") @db.VarChar(500)
-  language            String                       @default("en") @db.VarChar(10)
-  embedding           Bytes?
-  imageEmbedding      Bytes?                       @map("image_embedding")
-  wordCount           Int?                         @map("word_count")
-  readingTime         Int?                         @map("reading_time")
-  confidence          Float?                       @db.Float
-  publishedAt         DateTime?                    @map("published_at")
-  createdAt           DateTime                     @default(now()) @map("created_at")
-  updatedAt           DateTime                     @updatedAt @map("updated_at")
-  alertId             BigInt?                      @map("alert_id")
-  embedding_vec       Unsupported("vector(1024)")?
-  image_embedding_vec Unsupported("vector(1024)")?
-  type                String?                      @db.VarChar(255)
-  alert               Alert?                       @relation(fields: [alertId], references: [id])
+  id             BigInt    @id @default(autoincrement())
+  title          String    @db.VarChar(255)
+  content        String    @db.Text
+  summary        String?   @db.Text
+  location       String?   @db.VarChar(255)
+  category       String    @db.VarChar(100)
+  sourceUrl      String?   @map("source_url") @db.VarChar(500)
+  mediaUrl       String?   @map("media_url") @db.VarChar(500)
+  language       String    @default("en") @db.VarChar(10)
+  wordCount      Int?      @map("word_count")
+  readingTime    Int?      @map("reading_time")
+  confidence     Float?    @db.Float
+  publishedAt    DateTime? @map("published_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  alertId        BigInt?   @map("alert_id")
+  embedding      Unsupported("vector(1024)")?
+  imageEmbedding Unsupported("vector(1024)")? @map("image_embedding")
+  type           String?   @db.VarChar(255)
+  alert          Alert?    @relation(fields: [alertId], references: [id])
 
   @@index([category])
   @@index([publishedAt])
   @@index([confidence])
-  @@index([alertId], map: "documents_alert_id_fkey")
-  @@index([content(length: 191)])
-  @@index([title])
-  @@index([embedding_vec], map: "idx_documents_embedding_vec")
-  @@index([image_embedding_vec], map: "idx_documents_image_embedding_vec")
+  @@index([alertId])
   @@map("documents")
 }
 
 model Resource {
-  id             BigInt   @id @default(autoincrement())
-  name           String   @db.VarChar(255)
-  type           String   @db.VarChar(100)
-  description    String?  @db.Text
-  address        String   @db.VarChar(500)
-  city           String   @db.VarChar(100)
-  state          String   @db.VarChar(100)
-  country        String   @default("US") @db.VarChar(50)
-  postalCode     String?  @map("postal_code") @db.VarChar(20)
-  latitude       Float
-  longitude      Float
-  phone          String?  @db.VarChar(50)
-  email          String?  @db.VarChar(255)
-  website        String?  @db.VarChar(500)
-  capacity       Int?
-  currentLoad    Int?     @map("current_load")
-  isActive       Boolean  @default(true) @map("is_active")
-  isEmergency    Boolean  @default(false) @map("is_emergency")
-  operatingHours Json?    @map("operating_hours")
-  services       Json?
-  disasterTypes  Json?    @map("disaster_types")
-  lastUpdated    DateTime @default(now()) @map("last_updated")
-  embedding      Bytes?
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  id            BigInt   @id @default(autoincrement())
+  name          String   @db.VarChar(255)
+  type          String   @db.VarChar(100)
+  description   String?  @db.Text
+  address       String   @db.VarChar(500)
+  city          String   @db.VarChar(100)
+  state         String   @db.VarChar(100)
+  country       String   @default("US") @db.VarChar(50)
+  postalCode    String?  @map("postal_code") @db.VarChar(20)
+  latitude      Float
+  longitude     Float
+  phone         String?  @db.VarChar(50)
+  email         String?  @db.VarChar(255)
+  website       String?  @db.VarChar(500)
+  capacity      Int?
+  currentLoad   Int?     @map("current_load")
+  isActive      Boolean  @default(true) @map("is_active")
+  isEmergency   Boolean  @default(false) @map("is_emergency")
+  operatingHours Json?   @map("operating_hours")
+  services      Json?
+  disasterTypes Json?    @map("disaster_types")
+  lastUpdated   DateTime @default(now()) @map("last_updated")
+  createdAt     DateTime @default(now()) @map("created_at")
 
   @@index([type])
   @@index([latitude, longitude])
   @@index([isActive, isEmergency])
   @@index([address])
   @@index([city, state])
-  @@index([description(length: 191)])
-  @@index([name])
   @@map("resources")
 }
 

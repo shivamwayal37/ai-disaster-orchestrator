@@ -4,14 +4,12 @@
   "private": true,
   "workspaces": [
     "packages/frontend",
-    "packages/backend",
-    "packages/workers"
+    "packages/backend"
   ],
   "scripts": {
     "dev": "concurrently \"npm:dev:*\"",
     "dev:frontend": "npm --workspace packages/frontend run dev",
     "dev:backend": "npm --workspace packages/backend run dev",
-    "dev:workers": "echo 'run workers separately'",
     "lint": "eslint --ext .js,.ts . || true",
     "test": "echo 'no tests yet'"
   },
@@ -24,6 +22,5 @@
     "node-fetch": "^2.7.0"
   },
   "dependencies": {
-    "winston": "^3.17.0"
   }
 }

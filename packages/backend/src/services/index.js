@@ -5,7 +5,7 @@
 const actionServices = require('./actionServices');
 const { aiClient } = require('./aiClient');
 const alertService = require('./alertService');
-const embeddingService = require('./embeddingService');
+const EmbeddingWorker = require('../../worker/EmbeddingWorker');
 const { EnhancedErrorHandler } = require('./errorHandler');
 const { performanceOptimizer } = require('./performanceOptimizer');
 const { responseOrchestrator } = require('./responseOrchestratorService');
@@ -20,7 +20,7 @@ module.exports = {
   ...actionServices,
   aiClient,
   alertService,
-  embeddingService,
+  EmbeddingWorker,
   EnhancedErrorHandler,
   performanceOptimizer,
   responseOrchestrator,
