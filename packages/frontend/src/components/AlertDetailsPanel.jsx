@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   XCircle
 } from 'lucide-react'
+import { getSeverityLabel, getSeverityClasses, severityMap } from '@/utils/severityUtils'
 import ActionPlanDisplay from './ActionPlanDisplay'
 import TimestampDisplay from './TimestampDisplay'
 
@@ -73,7 +74,8 @@ export default function AlertDetailsPanel({ selectedAlert, isLoading }) {
   }
 
   const getSeverityColor = (severity) => {
-    switch (severity?.toUpperCase()) {
+    const sev = getSeverityLabel(severity)
+    switch (sev) {
       case 'CRITICAL': return 'text-disaster-red'
       case 'HIGH': return 'text-disaster-orange'
       case 'MEDIUM': return 'text-disaster-yellow'
@@ -82,15 +84,8 @@ export default function AlertDetailsPanel({ selectedAlert, isLoading }) {
     }
   }
 
-  const getSeverityBg = (severity) => {
-    switch (severity?.toUpperCase()) {
-      case 'CRITICAL': return 'bg-disaster-red/20 border-disaster-red/50'
-      case 'HIGH': return 'bg-disaster-orange/20 border-disaster-orange/50'
-      case 'MEDIUM': return 'bg-disaster-yellow/20 border-disaster-yellow/50'
-      case 'LOW': return 'bg-disaster-blue/20 border-disaster-blue/50'
-      default: return 'bg-gray-500/20 border-gray-500/50'
-    }
-  }
+  // Use the utility function from severityUtils
+  const getSeverityBg = (severity) => getSeverityClasses(severity)
 
   return (
     <div className="backdrop-filter backdrop-blur-md bg-white/10 rounded-2xl border border-white/20 shadow-2xl h-full flex flex-col">
@@ -103,7 +98,7 @@ export default function AlertDetailsPanel({ selectedAlert, isLoading }) {
             </h2>
             <div className="flex items-center space-x-4 text-sm">
               <span className={`px-3 py-1 rounded-full font-semibold ${getSeverityColor(selectedAlert.severity)}`}>
-                ● {selectedAlert.severity || 'UNKNOWN'} PRIORITY
+                ● {getSeverityLabel(selectedAlert.severity)} PRIORITY
               </span>
               {selectedAlert.type && (
                 <span className="text-gray-300">

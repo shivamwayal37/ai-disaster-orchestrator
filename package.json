@@ -10,6 +10,9 @@
     "dev": "concurrently \"npm:dev:*\"",
     "dev:frontend": "npm --workspace packages/frontend run dev",
     "dev:backend": "npm --workspace packages/backend run dev",
+    "worker:embedding": "node src/worker/EmbeddingWorker.js",
+    "worker:embedding:dev": "nodemon src/worker/EmbeddingWorker.js",
+    "worker:embedding:debug": "node --inspect src/worker/EmbeddingWorker.js",
     "lint": "eslint --ext .js,.ts . || true",
     "test": "echo 'no tests yet'"
   },

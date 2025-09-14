@@ -1,8 +1,24 @@
 const express = require('express');
 const router = express.Router();
+const { createClient } = require('redis');
+const { PrismaClient } = require('@prisma/client');
 const alertService = require('../services/alertService');
 const { body, param, query, validationResult } = require('express-validator');
 const logger = require('../utils/logger');
+
+const prisma = new PrismaClient();
+
+// Initialize Redis client for SSE
+const redisClient = createClient({
+  url: process.env.REDIS_URL || 'redis://localhost:6379'
+});
+
+redisClient.on('error', (err) => logger.error('Redis Client Error', err));
+
+// Only connect Redis in non-test environments
+if (process.env.NODE_ENV !== 'test') {
+  redisClient.connect().catch(console.error);
+}
 
 /**
  * @route   POST /api/alerts
@@ -13,8 +29,8 @@ router.post(
   '/',
   [
     body('source').isString().notEmpty(),
-    body('type').isString().notEmpty(),
-    body('severity').isIn(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']),
+    body('alertType').isString().notEmpty(),
+    body('severity').isIn([1, 2, 3, 4]), // 1=CRITICAL, 2=HIGH, 3=MEDIUM, 4=LOW
     body('location').isString().notEmpty(),
     body('coordinates')
       .isObject()
@@ -25,7 +41,7 @@ router.post(
         return true;
       }),
     body('description').isString().notEmpty(),
-    body('metadata').optional().isObject()
+    body('rawData').optional().isObject()
   ],
   async (req, res) => {
     try {
@@ -34,7 +50,22 @@ router.post(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const alert = await alertService.ingestAlert(req.body);
+      const { alertType, coordinates, ...rest } = req.body;
+      
+      // Map fields to match service layer expectations
+      const alertData = {
+        ...rest,
+        type: alertType, // Map to type for service layer
+        coordinates: {
+          latitude: coordinates?.latitude || null,
+          longitude: coordinates?.longitude || null
+        },
+        // Map rawData to metadata for service layer
+        metadata: rest.rawData || {}
+      };
+
+      const alert = await alertService.ingestAlert(alertData);
+      
       res.status(201).json({
         success: true,
         data: alert
@@ -87,38 +118,6 @@ router.post(
 );
 
 /**
- * @route   GET /api/alerts/:id
- * @desc    Get alert by ID
- * @access  Public (in production, this would be protected)
- */
-router.get(
-  '/:id',
-  [param('id').isString().notEmpty()],
-  async (req, res) => {
-    try {
-      const alert = await alertService.getAlertById(req.params.id);
-      if (!alert) {
-        return res.status(404).json({
-          success: false,
-          error: 'Alert not found'
-        });
-      }
-      
-      res.json({
-        success: true,
-        data: alert
-      });
-    } catch (error) {
-      logger.error({ error, alertId: req.params.id }, 'Failed to get alert');
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-  }
-);
-
-/**
  * @route   GET /api/alerts
  * @desc    Search alerts with filters and pagination
  * @access  Public (in production, this would be protected)
@@ -127,7 +126,7 @@ router.get(
   '/',
   [
     query('q').optional().isString(),
-    query('type').optional().isString(),
+    query('alertType').optional().isString(),
     query('severity').optional().isIn(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']),
     query('source').optional().isString(),
     query('status').optional().isString(),
@@ -145,26 +144,14 @@ router.get(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const {
-        q: query,
-        type,
-        severity,
-        source,
-        status,
-        startDate,
-        endDate,
-        page = 1,
-        limit = 20,
-        sortBy = 'createdAt',
-        sortOrder = 'desc'
-      } = req.query;
+      const { q: query, alertType, source, isActive, startDate, endDate, page = 1, limit = 20, sortBy = 'timestamp', sortOrder = 'desc' } = req.query;
 
       // Build filters
       const filters = {};
-      if (type) filters.type = type;
+      if (alertType) filters.alertType = alertType;
       if (severity) filters.severity = severity;
       if (source) filters.source = source;
-      if (status) filters.status = status;
+      if (isActive !== undefined) filters.isActive = isActive === 'true';
       if (startDate) filters.startDate = startDate;
       if (endDate) filters.endDate = endDate;
 
@@ -193,45 +180,6 @@ router.get(
       });
     } catch (error) {
       logger.error({ error, query: req.query }, 'Search failed');
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-  }
-);
-
-/**
- * @route   PATCH /api/alerts/:id/status
- * @desc    Update alert status
- * @access  Public (in production, this would be protected)
- */
-router.patch(
-  '/:id/status',
-  [
-    param('id').isString().notEmpty(),
-    body('status').isIn(['PENDING', 'PROCESSING', 'RESOLVED', 'FALSE_ALARM']),
-    body('metadata').optional().isObject()
-  ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
-      const alert = await alertService.updateAlertStatus(
-        req.params.id,
-        req.body.status,
-        req.body.metadata
-      );
-
-      res.json({
-        success: true,
-        data: alert
-      });
-    } catch (error) {
-      logger.error({ error, alertId: req.params.id }, 'Failed to update alert status');
       res.status(500).json({
         success: false,
         error: error.message
@@ -270,53 +218,198 @@ router.get(
  * @desc    Server-Sent Events stream for real-time alerts
  * @access  Public (in production, this would be protected)
  */
-router.get('/stream', (req, res) => {
-  // Set SSE headers
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Cache-Control'
+router.get('/stream', async (req, res) => {
+  // Set headers for SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const clientId = `client-${Date.now()}`;
+  logger.info({ clientId }, 'New SSE client connected');
+
+  // Create a new Redis subscriber for this client
+  const redisSubscriber = redisClient.duplicate();
+  redisSubscriber.connect().catch(err => {
+    logger.error({ clientId, error: err }, 'Failed to connect Redis subscriber');
+    return res.end();
+  });
+
+  // Subscribe to the alerts channel
+  redisSubscriber.subscribe('alerts:new', (message) => {
+    try {
+      const alert = JSON.parse(message);
+      res.write(`data: ${JSON.stringify({ type: 'alert', data: alert })}\n\n`);
+    } catch (err) {
+      logger.error({ clientId, error: err, message }, 'Error parsing alert message');
+    }
   });
 
   // Send initial connection confirmation
-  res.write('data: {"type":"connected","message":"Alert stream connected"}\n\n');
+  const sendEvent = (type, data) => {
+    try {
+      res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (err) {
+      logger.error({ clientId, error: err, type, data }, 'Error sending SSE event');
+    }
+  };
 
-  // Store client connection
-  const clientId = Date.now();
-  
-  // Send periodic heartbeat to keep connection alive
-  const heartbeat = setInterval(() => {
-    res.write('data: {"type":"heartbeat","timestamp":"' + new Date().toISOString() + '"}\n\n');
-  }, 30000);
+  // Send initial connection message
+  sendEvent('connected', { 
+    timestamp: new Date().toISOString(),
+    clientId,
+    message: 'Connected to alerts stream'
+  });
 
-  // Send initial alerts
-  alertService.searchAlerts('', { limit: 10, offset: 0 })
-    .then(results => {
-      if (results.results && results.results.length > 0) {
-        results.results.forEach(alert => {
-          res.write(`data: ${JSON.stringify({
-            type: 'alert',
-            data: alert
-          })}\n\n`);
-        });
-      }
-    })
-    .catch(error => {
-      logger.error({ error }, 'Failed to send initial alerts');
-    });
+  // Function to send active alerts
+  const sendActiveAlerts = async () => {
+    try {
+      const activeAlerts = await prisma.alert.findMany({
+        where: { isActive: true },
+        orderBy: { createdAt: 'desc' },
+        take: 10
+      });
+
+      sendEvent('initialAlerts', {
+        count: activeAlerts.length,
+        alerts: activeAlerts.map(alert => ({
+          ...alert,
+          // Map back to client-expected format if needed
+          status: alert.rawData?.status || 'ACTIVE'
+        }))
+      });
+    } catch (err) {
+      logger.error({ clientId, error: err }, 'Error fetching active alerts');
+    }
+  };
+
+  // Send initial active alerts
+  sendActiveAlerts();
+
+  // Set up periodic updates (every 30 seconds)
+  const intervalId = setInterval(sendActiveAlerts, 30000);
 
   // Handle client disconnect
-  req.on('close', () => {
-    clearInterval(heartbeat);
+  const cleanup = () => {
+    clearInterval(intervalId);
+    redisSubscriber.quit().catch(err => 
+      logger.error({ clientId, error: err }, 'Error closing Redis subscriber')
+    );
     logger.info({ clientId }, 'SSE client disconnected');
-  });
+  };
 
+  req.on('close', cleanup);
   req.on('error', (error) => {
-    clearInterval(heartbeat);
-    logger.error({ error, clientId }, 'SSE client error');
+    logger.error({ clientId, error }, 'SSE client error');
+    cleanup();
   });
 });
+
+/**
+ * @route   GET /api/alerts/:id
+ * @desc    Get alert by ID
+ * @access  Public (in production, this would be protected)
+ */
+router.get(
+  '/:id',
+  [param('id').isString().notEmpty()],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      // Convert ID to BigInt for Prisma
+      const alertId = BigInt(req.params.id);
+      const alert = await alertService.getAlertById(alertId);
+      
+      if (!alert) {
+        return res.status(404).json({
+          success: false,
+          error: 'Alert not found'
+        });
+      }
+
+      // Map fields to client-expected format
+      const responseData = {
+        ...alert,
+        // Map rawData to metadata for backward compatibility
+        metadata: alert.rawData || {},
+        // Map isActive to status for backward compatibility
+        status: alert.rawData?.status || (alert.isActive ? 'ACTIVE' : 'INACTIVE')
+      };
+
+      res.json({
+        success: true,
+        data: responseData
+      });
+    } catch (error) {
+      logger.error({ error, alertId: req.params.id }, 'Failed to get alert');
+      
+      // Handle different types of errors
+      if (error.message.includes('Alert ID is required') || 
+          error.message.includes('Invalid alert ID format')) {
+        return res.status(400).json({
+          success: false,
+          error: error.message
+        });
+      }
+      
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+);
+
+/**
+ * @route   PATCH /api/alerts/:id/status
+ * @desc    Update alert status
+ * @access  Public (in production, this would be protected)
+ */
+router.patch(
+  '/:id/status',
+  [
+    param('id').isString().notEmpty(),
+    body('status').isIn(['PENDING', 'PROCESSING', 'RESOLVED', 'FALSE_ALARM']),
+    body('metadata').optional().isObject()
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const alertId = BigInt(req.params.id);
+      const { status, metadata = {} } = req.body;
+      
+      // Update alert status using the service
+      const updatedAlert = await alertService.updateAlertStatus(alertId, status, metadata);
+      
+      // Map response to match client expectations
+      const responseData = {
+        ...updatedAlert,
+        // Map rawData to metadata for backward compatibility
+        metadata: updatedAlert.rawData || {},
+        // Map isActive to status for backward compatibility
+        status: updatedAlert.rawData?.status || (updatedAlert.isActive ? 'ACTIVE' : 'INACTIVE')
+      };
+      
+      res.json({
+        success: true,
+        data: responseData
+      });
+    } catch (error) {
+      logger.error({ error, alertId: req.params.id }, 'Failed to update alert status');
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+);
 
 module.exports = router;

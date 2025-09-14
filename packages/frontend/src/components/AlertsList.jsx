@@ -4,6 +4,7 @@ import { useState } from 'react'
 import AlertCard from './AlertCard'
 import { AlertCircle, Clock, Loader2 } from 'lucide-react'
 import LiveTime from './LiveTime'
+import { getSeverityLabel } from '@/utils/severityUtils'
 
 export default function AlertsList({ alerts, onAlertSelect, selectedAlert, isLoading }) {
   const [sortBy, setSortBy] = useState('timestamp') // timestamp, severity, location
@@ -15,8 +16,9 @@ export default function AlertsList({ alerts, onAlertSelect, selectedAlert, isLoa
   const sortedAlerts = [...alerts].sort((a, b) => {
     switch (sortBy) {
       case 'severity':
-        const severityOrder = { 'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1 }
-        return (severityOrder[b.severity] || 0) - (severityOrder[a.severity] || 0)
+        // Since severity is stored as numbers (1-4) in the database
+        // Lower numbers are higher severity (1 = CRITICAL, 4 = LOW)
+        return (a.severity || 0) - (b.severity || 0)
       case 'location':
         return (a.location || '').localeCompare(b.location || '')
       default: // timestamp
@@ -27,7 +29,8 @@ export default function AlertsList({ alerts, onAlertSelect, selectedAlert, isLoa
   // Filter alerts
   const filteredAlerts = sortedAlerts.filter(alert => {
     if (filterBy === 'all') return true
-    return (alert.severity || '').toLowerCase() === filterBy.toLowerCase()
+    const severityLabel = getSeverityLabel(alert.severity || 0)
+    return severityLabel.toLowerCase() === filterBy.toLowerCase()
   })
 
   // Pagination

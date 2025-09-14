@@ -22,5 +22,22 @@ services:
     volumes:
       - redis_data:/data
 
+  # Embedding Worker Service
+  embedding-worker:
+    build: 
+      context: ./packages/backend
+    command: node src/worker/embedding-processor.js
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - EMBEDDING_BATCH_SIZE=10
+    depends_on:
+      - redis
+      - backend
+    volumes:
+      - ./packages/backend/logs:/app/logs
+    restart: unless-stopped
+
 volumes:
   redis_data:

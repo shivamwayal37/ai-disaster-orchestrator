@@ -227,10 +227,11 @@ router.post('/respond', async (req, res) => {
 
     await prisma.actionAudit.create({
       data: {
-        incidentId: incident.id,
+        alertId: incident.id ? BigInt(incident.id) : null,
         action: 'DISASTER_RESPONSE_ORCHESTRATION',
         payload: orchestrationLog,
-        status: 'SUCCESS'
+        status: 'SUCCESS',
+        duration: totalDuration
       }
     });
 
@@ -299,6 +300,7 @@ router.post('/respond', async (req, res) => {
     try {
       await prisma.actionAudit.create({
         data: {
+          alertId: incident?.id ? BigInt(incident.id) : null,
           action: 'DISASTER_RESPONSE_ORCHESTRATION',
           payload: {
             orchestration_id: orchestrationId,
@@ -307,7 +309,8 @@ router.post('/respond', async (req, res) => {
             duration: errorDuration
           },
           status: 'ERROR',
-          errorMsg: error.message
+          errorMsg: error.message,
+          duration: errorDuration
         }
       });
     } catch (logError) {

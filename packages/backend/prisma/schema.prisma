@@ -24,7 +24,7 @@ model Alert {
   rawData     Json?     @map("raw_data")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
-  alert_uid   String    @db.VarChar(64)
+  alert_uid   String    @unique @default(uuid()) 
   embedding   Unsupported("vector(1024)")?
   documents   Document[]
 
@@ -101,6 +101,7 @@ model Resource {
 model ActionAudit {
   id        BigInt   @id @default(autoincrement())
   alertId   BigInt?  @map("alert_id")
+  incidentId BigInt?  @map("incident_id") 
   action    String   @db.VarChar(100)
   payload   Json?
   status    String   @db.VarChar(50)

@@ -6,17 +6,66 @@ const { searchSimilarIncidents } = require('./searchService');
 
 const prisma = new PrismaClient();
 
-// Initialize Redis client for queuing
+// Initialize Redis client with reconnection strategy
 const redisClient = createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379'
+  url: process.env.REDIS_URL || 'redis://localhost:6379',
+  socket: {
+    reconnectStrategy: (retries) => {
+      if (retries > 10) {
+        logger.error('Too many reconnection attempts. Giving up.');
+        return new Error('Too many reconnection attempts');
+      }
+      // Exponential backoff: 2^retries * 100ms, max 5s
+      const delay = Math.min(2 ** retries * 100, 5000);
+      logger.warn(`Redis reconnecting in ${delay}ms...`);
+      return delay;
+    }
+  }
 });
 
-redisClient.on('error', (err) => logger.error('Redis Client Error', err));
+// Handle Redis connection events
+redisClient.on('error', (err) => logger.error({ error: err }, 'Redis Client Error'));
+redisClient.on('connect', () => logger.info('Redis client connected'));
+redisClient.on('reconnecting', () => logger.info('Redis client reconnecting...'));
+redisClient.on('ready', () => logger.info('Redis client ready'));
 
 // Only connect Redis in non-test environments
+let isRedisConnected = false;
 if (process.env.NODE_ENV !== 'test') {
-  redisClient.connect().catch(console.error);
+  (async () => {
+    try {
+      await redisClient.connect();
+      isRedisConnected = true;
+    } catch (error) {
+      logger.error({ error }, 'Failed to connect to Redis');
+      isRedisConnected = false;
+    }
+  })();
 }
+
+// Helper function to safely execute Redis commands
+const safeRedisCommand = async (command, ...args) => {
+  if (!isRedisConnected) {
+    logger.warn('Redis client not connected, attempting to reconnect...');
+    try {
+      await redisClient.connect();
+      isRedisConnected = true;
+    } catch (error) {
+      logger.error({ error }, 'Failed to reconnect to Redis');
+      throw new Error('Redis connection unavailable');
+    }
+  }
+
+  try {
+    return await command(...args);
+  } catch (error) {
+    if (error.code === 'ECONNRESET' || error.code === 'NR_CLOSED') {
+      isRedisConnected = false;
+      logger.warn('Redis connection lost, will attempt to reconnect on next operation');
+    }
+    throw error;
+  }
+};
 
 const EMBEDDING_QUEUE_NAME = 'embedding-queue';
 
@@ -46,11 +95,35 @@ class AlertService {
           latitude: coordinates?.latitude || null,
           longitude: coordinates?.longitude || null,
           description,
-          rawData: metadata,
-          status: 'PENDING',
+          rawData: {
+            ...metadata,
+            status: 'PENDING',
+            createdAt: new Date().toISOString()
+          },
+          isActive: true,
           embedding: null
         }
       });
+
+      // Publish alert event to Redis
+      try {
+        await safeRedisCommand(
+          redisClient.publish.bind(redisClient),
+          'alerts:new',
+          JSON.stringify({
+            id: alert.id,
+            alert_uid: alert.alert_uid,
+            type: alert.alertType,
+            severity: alert.severity,
+            location: alert.location,
+            description: alert.description,
+            timestamp: new Date().toISOString()
+          })
+        );
+      } catch (error) {
+        this.logger.error({ error, alertId }, 'Failed to publish alert event');
+        // Continue processing even if Redis publish fails
+      }
 
       // Queue for embedding generation
       await this.queueForEmbedding(alertId, description);
@@ -196,17 +269,25 @@ class AlertService {
           take: 5,
           select: {
             id: true,
-            type: true,
+            alertType: true,
             severity: true,
             location: true,
             description: true,
-            createdAt: true
+            createdAt: true,
+            isActive: true,
+            rawData: true
           }
         })
       ]);
 
       // Process time series data for charts
       const timeSeries = await this.getTimeSeriesData(startDate, now);
+
+      // Map alert types to use alertType instead of type
+      const recentAlertsMapped = recentAlerts.map(alert => ({
+        ...alert,
+        type: alert.alertType
+      }));
 
       return {
         timeRange: {
@@ -218,7 +299,7 @@ class AlertService {
         },
         totalAlerts,
         alertsByType: alertsByType.map(item => ({
-          type: item.type,
+          type: item.alertType,  // Changed from item.type
           count: item._count
         })),
         alertsBySeverity: alertsBySeverity.map(item => ({
@@ -229,7 +310,7 @@ class AlertService {
           source: item.source,
           count: item._count
         })),
-        recentAlerts,
+        recentAlerts: recentAlertsMapped,
         timeSeries
       };
       
@@ -241,20 +322,35 @@ class AlertService {
 
   /**
    * Get alert by ID
+   * @param {string|number|bigint} alertId - The ID of the alert to retrieve
+   * @returns {Promise<Object|null>} The alert object or null if not found
+   * @throws {Error} If the ID is invalid or the query fails
    */
   async getAlertById(alertId) {
     try {
+      // Ensure alertId is provided and not empty
+      if (alertId === undefined || alertId === null || alertId === '') {
+        throw new Error('Alert ID is required');
+      }
+
+      // Convert to BigInt safely
+      let id;
+      try {
+        id = typeof alertId === 'bigint' ? alertId : BigInt(alertId);
+      } catch (error) {
+        throw new Error(`Invalid alert ID format: ${alertId}`);
+      }
+      
       const alert = await prisma.alert.findUnique({
-        where: { id: alertId },
+        where: { id: id },
         include: {
-          relatedAlerts: {
+          // Removed relatedAlerts as it's not in the schema
+          documents: {
             take: 5,
             orderBy: { createdAt: 'desc' },
             select: {
               id: true,
-              type: true,
-              severity: true,
-              location: true,
+              title: true,
               description: true,
               createdAt: true
             }
@@ -266,7 +362,11 @@ class AlertService {
         throw new Error('Alert not found');
       }
 
-      return alert;
+      // Map alertType to type for backward compatibility
+      return {
+        ...alert,
+        type: alert.alertType
+      };
       
     } catch (error) {
       this.logger.error({ error, alertId }, 'Failed to get alert');
@@ -276,6 +376,9 @@ class AlertService {
 
   /**
    * Update alert status
+   * @param {string|number|bigint} alertId - The ID of the alert to update
+   * @param {string} status - New status for the alert
+   * @param {Object} [metadata={}] - Additional metadata for the status update
    */
   async updateAlertStatus(alertId, status, metadata = {}) {
     const validStatuses = ['PENDING', 'PROCESSING', 'RESOLVED', 'FALSE_ALARM'];
@@ -285,19 +388,28 @@ class AlertService {
     }
 
     try {
-      const updatedAlert = await prisma.alert.update({
-        where: { id: alertId },
-        data: {
-          status,
-          metadata: {
-            ...metadata,
-            statusUpdatedAt: new Date().toISOString()
-          }
+      // Convert alertId to BigInt if it's a valid number
+      const id = typeof alertId === 'bigint' ? alertId : BigInt(alertId);
+      
+      const updateData = {
+        isActive: status !== 'RESOLVED', // Map status to isActive
+        rawData: {
+          ...metadata,
+          status: status,
+          statusUpdatedAt: new Date().toISOString()
         }
+      };
+      
+      const updatedAlert = await prisma.alert.update({
+        where: { id },
+        data: updateData
       });
 
       this.logger.info({ alertId, status }, 'Alert status updated');
-      return updatedAlert;
+      return {
+        ...updatedAlert,
+        status: status // Include status in the returned object for backward compatibility
+      };
       
     } catch (error) {
       this.logger.error({ error, alertId, status }, 'Failed to update alert status');
@@ -312,14 +424,36 @@ class AlertService {
    */
   async queueForEmbedding(alertId, text) {
     try {
+      // Convert alertId to string to ensure proper serialization
+      const alertIdStr = alertId.toString();
+      
+      // First, update the alert status to QUEUED
+      await prisma.alert.update({
+        where: { id: BigInt(alertId) },
+        data: {
+          isActive: true,
+          rawData: {
+            status: 'QUEUED',
+            embeddingStatus: 'QUEUED',
+            updatedAt: new Date().toISOString()
+          }
+        }
+      });
+
       const job = {
-        alertId,
+        alertId: alertIdStr, // Use string version for JSON serialization
         text,
         timestamp: Date.now()
       };
 
       // Push the job to the Redis list (queue)
-      await redisClient.lPush(EMBEDDING_QUEUE_NAME, JSON.stringify(job));
+      await safeRedisCommand(
+        redisClient.lPush.bind(redisClient),
+        EMBEDDING_QUEUE_NAME,
+        JSON.stringify(job)
+      );
+      
+      this.logger.info({ alertId: alertIdStr }, 'Alert queued for embedding');
 
       this.logger.info({ alertId }, 'Alert queued for embedding');
 

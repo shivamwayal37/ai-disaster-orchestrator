@@ -248,12 +248,14 @@ async function testCompleteIngestionFlow() {
     // Test 10: Verify Vector Indexing
     console.log('\n🔟 Verifying vector indexing...');
     try {
-      const documentsWithEmbeddings = await prisma.document.count({
-        where: {
-          embedding: { not: null }
-        }
-      });
+      // Use raw SQL to count documents with embeddings
+      const [result] = await prisma.$queryRaw`
+        SELECT COUNT(*) as count
+        FROM documents
+        WHERE embedding IS NOT NULL
+      `;
       
+      const documentsWithEmbeddings = Number(result.count);
       console.log(`🎯 Documents with embeddings: ${documentsWithEmbeddings}`);
       
       if (documentsWithEmbeddings > 0) {
