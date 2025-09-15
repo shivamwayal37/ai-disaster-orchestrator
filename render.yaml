@@ -4,8 +4,8 @@ services:
     env: node
     region: oregon
     plan: starter
-    buildCommand: cd packages/backend && npm install && npx prisma generate
-    startCommand: cd packages/backend && npm start
+    buildCommand: npm install && cd packages/backend && npm install && npx prisma generate
+    startCommand: cd packages/backend && NODE_ENV=production npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
