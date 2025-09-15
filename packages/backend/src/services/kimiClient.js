@@ -291,53 +291,82 @@ Alert text: ${text}`;
     }
   }
 
-  async generateRAGResponse(query, context) {
-    const prompt = `You are an AI disaster response coordinator. Based on the query and retrieved context, provide a comprehensive response with actionable recommendations.
-
-Query: ${query}
-
-Retrieved Context:
-${JSON.stringify(context, null, 2)}
-
-Please provide:
-1. Situation assessment based on similar incidents
-2. Recommended immediate actions from relevant protocols
-3. Resource deployment suggestions
-4. Risk mitigation strategies
-5. Coordination requirements
-
-Format your response in clear sections with specific, actionable guidance.`;
-
+  async generateRAGResponse(params) {
+    let query, context;
     try {
+      // Handle both object parameter and legacy (query, context) parameters
+      const parsedParams = params || {};
+      query = typeof params === 'string' ? params : (params?.query || '');
+      context = Array.isArray(params) ? (params[1] || []) : (params?.context || []);
+      const maxTokens = parsedParams.maxTokens || 2000;
+      const temperature = parsedParams.temperature || 0.7;
+
+      if (!query) {
+        throw new Error('Query is required for RAG response generation');
+      }
+
+      const systemPrompt = 'You are a disaster response coordinator AI. Provide clear, actionable recommendations based on the context.';
+      const userPrompt = `Context: ${JSON.stringify(context, null, 2)}\n\n` +
+        `Query: ${query}\n\n` +
+        `Please provide a detailed response with specific actions and recommendations.`;
+
       const response = await this.makeRequest('/chat/completions', {
         model: this.model,
         messages: [
-          {
-            role: 'system',
-            content: 'You are an expert disaster response coordinator with access to historical incident data and emergency protocols. Provide clear, actionable guidance based on the retrieved context.'
-          },
-          {
-            role: 'user',
-            content: prompt
-          }
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
         ],
-        max_tokens: 1000,
-        temperature: 0.3
+        max_tokens: maxTokens,
+        temperature: temperature,
+        top_p: 0.9,
+        n: 1,
+        stream: false
       });
 
-      const ragResponse = response.choices[0].message.content.trim();
+      if (!response?.choices?.[0]?.message?.content) {
+        throw new Error('Invalid response format from Kimi API');
+      }
+
+      if (!response || !response.choices || !response.choices[0] || !response.choices[0].message) {
+        throw new Error('Invalid response format from Kimi API');
+      }
+
+      const ragResponse = response.choices[0].message.content?.trim() || '';
       
       logger.info({
         queryLength: query.length,
         contextSize: JSON.stringify(context).length,
-        responseLength: ragResponse.length
+        responseLength: ragResponse.length,
+        model: this.model
       }, 'RAG response generated successfully');
 
       return ragResponse;
 
-    } catch (error) {
-      logger.error(error, 'RAG response generation failed');
-      throw error;
+} catch (error) {
+      // Ensure we have safe values for error logging
+      const errorQuery = typeof query !== 'undefined' 
+        ? (typeof query === 'string' ? query.substring(0, 200) : JSON.stringify(query).substring(0, 200))
+        : 'undefined';
+      const errorContextSize = Array.isArray(context) ? context.length : 0;
+      
+      logger.error({ 
+        error: error.message, 
+        stack: error.stack,
+        query: errorQuery,
+        contextSize: errorContextSize
+      }, 'RAG response generation failed');
+      
+      // Return a default response in case of error
+      return JSON.stringify({
+        summary: `Error generating response: ${error.message}`,
+        actions: [{
+          type: 'notify_team',
+          description: 'Review the error and take appropriate action',
+          priority: 'high',
+          resources_required: ['team'],
+          estimated_duration: '15 minutes'
+        }]
+      });
     }
   }
 

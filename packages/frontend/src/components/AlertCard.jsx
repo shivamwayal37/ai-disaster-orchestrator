@@ -9,29 +9,69 @@ import {
   AlertTriangle,
   MapPin,
   Clock,
-  Loader2
+  Loader2,
+  TrendingUp
 } from 'lucide-react'
-import LiveRelativeTime from './LiveRelativeTime'
 
+/**
+ * Maps disaster types to appropriate Lucide React icons
+ * 
+ * @param {string} type - Disaster type (e.g., 'wildfire', 'flood')
+ * @returns {JSX.Element} Corresponding icon component
+ */
 const getAlertIcon = (type) => {
-  const iconClass = "w-5 h-5"
   switch (type?.toLowerCase()) {
     case 'wildfire':
     case 'fire':
-      return <Flame className={iconClass} />
+      return <Flame />              // Fire icon for wildfire alerts
     case 'flood':
     case 'flooding':
-      return <Droplets className={iconClass} />
+      return <Droplets />           // Water droplets for flood alerts
     case 'earthquake':
-      return <Mountain className={iconClass} />
+      return <Mountain />           // Mountain icon for earthquake alerts
     case 'storm':
     case 'tornado':
-      return <Wind className={iconClass} />
+      return <Wind />               // Wind icon for storm/tornado alerts
     case 'power':
     case 'electrical':
-      return <Zap className={iconClass} />
+      return <Zap />                // Lightning bolt for electrical alerts
     default:
-      return <AlertTriangle className={iconClass} />
+      return <AlertTriangle />      // Generic alert triangle for unknown types
+  }
+}
+
+/**
+ * Formats timestamp into human-readable relative time
+ * 
+ * Handles multiple timestamp field formats and provides fallbacks for missing data.
+ * Returns relative time strings like "5m ago", "2h ago", "3d ago".
+ * 
+ * @param {string|Date} timestamp - Timestamp to format
+ * @returns {string} Human-readable relative time string
+ */
+const formatTimestamp = (timestamp) => {
+  if (!timestamp) return 'Unknown time'
+  
+  try {
+    // Handle multiple timestamp field names and formats from different API responses
+    const timeValue = timestamp || alert.created_at || alert.createdAt
+    if (!timeValue) return 'Unknown time'
+    
+    const date = new Date(timeValue)
+    if (isNaN(date.getTime())) return 'Invalid time'
+    
+    // Calculate time difference in minutes
+    const now = new Date()
+    const diffInMinutes = Math.floor((now - date) / (1000 * 60))
+    
+    // Return appropriate relative time format
+    if (diffInMinutes < 1) return 'Just now'
+    if (diffInMinutes < 60) return `${diffInMinutes}m ago`           // Less than 1 hour
+    if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)}h ago`  // Less than 1 day
+    return `${Math.floor(diffInMinutes / 1440)}d ago`                // Days ago
+  } catch (error) {
+    console.error('Error formatting timestamp:', error)
+    return 'Unknown time'
   }
 }
 
@@ -112,12 +152,30 @@ const getSeverityConfig = (severity) => {
   }
 }
 
-// Timestamp is rendered via client-only component to avoid SSR/client mismatch
+/**
+ * Alert Card Component
+ * 
+ * Displays individual disaster alerts in a card format with severity indicators,
+ * icons, timestamps, and interactive selection functionality.
+ * 
+ * Features:
+ * - Dynamic severity-based styling and colors
+ * - Disaster type-specific icons (wildfire, flood, earthquake, etc.)
+ * - Timestamp formatting with fallback handling
+ * - Hover effects and selection states
+ * - Responsive design for mobile and desktop
+ * 
+ * @param {Object} props - Component props
+ * @param {Object} props.alert - Alert data object
+ * @param {Function} props.onSelect - Callback when alert is selected
+ * @param {boolean} props.isSelected - Whether this alert is currently selected
+ */
+import { useState } from 'react'
 
-export default function AlertCard({ alert, isSelected, onClick, isLoading }) {
+export default function AlertCard({ alert, onSelect, isSelected, onClick, isLoading }) {
   const severityConfig = getSeverityConfig(alert.severity)
   const icon = getAlertIcon(alert.type || alert.disaster_type)
-  const ts = alert.timestamp || alert.created_at
+  const ts = alert.timestamp || alert.created_at || alert.createdAt
 
   return (
     <div
@@ -183,7 +241,7 @@ export default function AlertCard({ alert, isSelected, onClick, isLoading }) {
           <div className="flex items-center justify-between text-xs">
             <div className="flex items-center text-gray-400">
               <Clock className="w-3 h-3 mr-1" />
-              <span><LiveRelativeTime timestamp={ts} /></span>
+              <span>{formatTimestamp(ts)}</span>
             </div>
             
             {alert.affected_population && (

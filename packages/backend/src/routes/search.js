@@ -1,10 +1,62 @@
 const express = require('express');
 const { prisma } = require('../db');
 const pino = require('pino');
-const { vectorSearch } = require('../services/searchService');
+const { vectorSearch, hybridSearch } = require('../services/searchService');
 
 const router = express.Router();
 const logger = pino({ name: 'search' });
+
+// Root search endpoint for frontend queries
+router.get('/', async (req, res) => {
+  try {
+    const { q: query, limit = 10, type = 'document' } = req.query;
+
+    if (!query) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Query parameter is required',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    logger.info({ query, type, limit }, 'Processing search request');
+    
+    const results = await hybridSearch(query, {
+      type,
+      limit: parseInt(limit),
+      vectorWeight: 0.6,
+      textWeight: 0.4
+    });
+
+    logger.info({ 
+      query, 
+      results: results.length, 
+      searchType: 'hybrid',
+      timestamp: new Date().toISOString() 
+    }, 'Hybrid search completed');
+
+    return res.json({
+      success: true,
+      query,
+      results,
+      total: results.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error({ 
+      error: error.message, 
+      stack: error.stack,
+      timestamp: new Date().toISOString() 
+    }, 'Search request failed');
+    
+    return res.status(500).json({ 
+      success: false,
+      error: 'Search failed',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 // Full-text search endpoint
 router.get('/fulltext', async (req, res) => {
@@ -229,6 +281,60 @@ router.get('/resources', async (req, res) => {
   } catch (error) {
     logger.error(error, 'Resource search failed');
     res.status(500).json({ error: 'Resource search failed' });
+  }
+});
+
+// Catch-all search endpoint that routes to the appropriate search type
+router.get('/', async (req, res) => {
+  const { q: query, type = 'hybrid', limit = 10 } = req.query;
+  
+  if (!query) {
+    return res.status(400).json({ 
+      error: 'Query parameter (q) is required',
+      example: '/api/search?q=wildfire&type=hybrid&limit=10'
+    });
+  }
+
+  try {
+    let results;
+    
+    switch(type.toLowerCase()) {
+      case 'vector':
+        results = await vectorSearch(query, {}, limit);
+        break;
+      case 'fulltext':
+        const documents = await prisma.$queryRaw`
+          SELECT 
+            id, 
+            title, 
+            category,
+            LEFT(content, 200) as content_preview,
+            MATCH(content) AGAINST(${query} IN NATURAL LANGUAGE MODE) as relevance_score
+          FROM documents 
+          WHERE MATCH(content) AGAINST(${query} IN NATURAL LANGUAGE MODE)
+          ORDER BY relevance_score DESC
+          LIMIT ${parseInt(limit)}
+        `;
+        results = { results: documents };
+        break;
+      case 'hybrid':
+      default:
+        results = await hybridSearch(query, {}, limit);
+    }
+    
+    res.json({
+      query,
+      type,
+      results: results.results || results.documents || [],
+      total: results.length || (results.results ? results.results.length : 0)
+    });
+    
+  } catch (error) {
+    logger.error({ error, query, type }, 'Search failed');
+    res.status(500).json({ 
+      error: 'Search failed',
+      details: error.message 
+    });
   }
 });
 

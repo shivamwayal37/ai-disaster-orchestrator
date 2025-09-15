@@ -10,7 +10,7 @@ const pino = require('pino');
 const logger = pino({ name: 'pipeline-test-enhanced' });
 
 const { hybridSearch, vectorSearch, fullTextSearch, getJinaEmbedding, healthCheck } = require('../services/searchService');
-const EmbeddingWorker = require('../worker/embedding-processor');
+const EmbeddingWorker = require('../worker/EmbeddingWorker');
 const { createClient } = require('redis');
 
 /**

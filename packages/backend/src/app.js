@@ -25,10 +25,10 @@ const pinoHttp = require('pino-http');
 const searchRoutes = require('./routes/search');
 const retrieveRoutes = require('./routes/retrieve');
 const respondRoutes = require('./routes/respond');
-const incidentsRoutes = require('./routes/incidents');
 const orchestratorRoutes = require('./routes/orchestratorRoutes');
 const { ActionOrchestrator } = require('./services/actionServices');
 const alertRoutes = require('./routes/alertRoutes');
+const incidentsRoutes = require('./routes/incidents');
 
 const app = express();
 const logger = pino({ name: 'disaster-orchestrator' });

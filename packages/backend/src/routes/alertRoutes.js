@@ -144,40 +144,45 @@ router.get(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { q: query, alertType, source, isActive, startDate, endDate, page = 1, limit = 20, sortBy = 'timestamp', sortOrder = 'desc' } = req.query;
+      const { q: query, alertType, source, isActive, startDate, endDate, page = 1, limit = 20, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
 
       // Build filters
-      const filters = {};
-      if (alertType) filters.alertType = alertType;
-      if (severity) filters.severity = severity;
-      if (source) filters.source = source;
-      if (isActive !== undefined) filters.isActive = isActive === 'true';
-      if (startDate) filters.startDate = startDate;
-      if (endDate) filters.endDate = endDate;
+      const filters = {
+        ...(alertType && { alertType }),
+        ...(source && { source }),
+        ...(isActive !== undefined && { isActive: isActive === 'true' }),
+        ...(startDate && { startDate }),
+        ...(endDate && { endDate }),
+        ...(req.query.severity && { severity: req.query.severity })
+      };
 
-      // Execute search
+      // Execute search with pagination
       const searchResults = await alertService.searchAlerts(query || '', {
-        limit,
-        offset: (page - 1) * limit,
+        limit: parseInt(limit),
+        offset: (parseInt(page) - 1) * parseInt(limit),
         filters,
         sortBy,
         sortOrder
       });
 
-      res.json({
+      // Format the response
+      const response = {
         success: true,
-        data: searchResults.results,
+        data: searchResults.results || [],
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
-          total: searchResults.total,
-          totalPages: Math.ceil(searchResults.total / limit)
-        },
-        stats: {
-          vectorResults: searchResults.vectorResults,
-          fullTextResults: searchResults.fullTextResults
+          total: searchResults.pagination?.total || 0,
+          totalPages: searchResults.pagination?.totalPages || 0
         }
-      });
+      };
+
+      // Add stats if available
+      if (searchResults.stats) {
+        response.stats = searchResults.stats;
+      }
+
+      res.json(response);
     } catch (error) {
       logger.error({ error, query: req.query }, 'Search failed');
       res.status(500).json({
@@ -320,8 +325,7 @@ router.get(
         return res.status(400).json({ errors: errors.array() });
       }
 
-      // Convert ID to BigInt for Prisma
-      const alertId = BigInt(req.params.id);
+      const alertId = req.params.id;
       const alert = await alertService.getAlertById(alertId);
       
       if (!alert) {
@@ -331,18 +335,9 @@ router.get(
         });
       }
 
-      // Map fields to client-expected format
-      const responseData = {
-        ...alert,
-        // Map rawData to metadata for backward compatibility
-        metadata: alert.rawData || {},
-        // Map isActive to status for backward compatibility
-        status: alert.rawData?.status || (alert.isActive ? 'ACTIVE' : 'INACTIVE')
-      };
-
       res.json({
         success: true,
-        data: responseData
+        data: alert
       });
     } catch (error) {
       logger.error({ error, alertId: req.params.id }, 'Failed to get alert');

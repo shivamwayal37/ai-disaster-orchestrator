@@ -3,7 +3,7 @@
  * Processes pending embedding jobs from Redis queue
  */
 
-const EmbeddingWorker = require('../worker/EmbeddingWorker');
+const EmbeddingWorker = require('./EmbeddingWorker');
 const { createClient } = require('redis');
 const { prisma } = require('../db');
 const pino = require('pino');

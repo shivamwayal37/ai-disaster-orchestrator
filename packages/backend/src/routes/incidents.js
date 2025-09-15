@@ -1,119 +1,118 @@
 const express = require('express');
-const pino = require('pino');
-const { testConnection } = require('../db');
-
 const router = express.Router();
-const logger = pino();
+const logger = require('../utils/logger');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+const { hybridSearch } = require('../services/searchService');
 
-// Health check endpoint
-router.get('/health', async (req, res) => {
-  const dbStatus = await testConnection();
-  res.json({
-    status: 'ok',
-    database: dbStatus ? 'connected' : 'disconnected',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Get all incidents/alerts
+/**
+ * @route GET /api/incidents
+ * @desc Get all incidents from the database
+ * @access Public
+ */
 router.get('/', async (req, res) => {
-  logger.info('fetching all incidents');
+  logger.info('Fetching all incidents from database');
   
-  // Mock response for Day 1 - return sample disaster alerts
-  const mockIncidents = [
-    {
-      id: 1,
-      type: 'flood',
-      title: 'Flash Flood Warning - Downtown Area',
-      location: 'Downtown District',
-      latitude: 12.34,
-      longitude: 56.78,
-      severity: 4,
-      status: 'active',
-      description: 'Heavy rainfall has caused flash flooding in the downtown area. Water levels rising rapidly.',
-      created_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(), // 30 minutes ago
-      updated_at: new Date().toISOString()
-    },
-    {
-      id: 2,
-      type: 'wildfire',
-      title: 'Wildfire Alert - Northern Hills',
-      location: 'Northern Hills Region',
-      latitude: 12.56,
-      longitude: 56.90,
-      severity: 3,
-      status: 'monitoring',
-      description: 'Wildfire detected in Northern Hills. Fire crews dispatched. Evacuation may be necessary.',
-      created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2 hours ago
-      updated_at: new Date(Date.now() - 15 * 60 * 1000).toISOString() // 15 minutes ago
-    },
-    {
-      id: 3,
-      type: 'earthquake',
-      title: 'Seismic Activity - Magnitude 4.2',
-      location: 'Eastern Suburbs',
-      latitude: 12.12,
-      longitude: 56.45,
-      severity: 2,
-      status: 'resolved',
-      description: 'Magnitude 4.2 earthquake detected. No significant damage reported. Monitoring for aftershocks.',
-      created_at: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(), // 6 hours ago
-      updated_at: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString() // 4 hours ago
-    }
-  ];
-  
-  return res.json({
-    data: mockIncidents,
-    total: mockIncidents.length,
-    timestamp: new Date().toISOString()
-  });
+  try {
+    const { page = 1, limit = 10, status, severity, type } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    // Build where clause based on query parameters
+    const where = {};
+    if (status) where.isActive = status === 'true';
+    if (severity) where.severity = severity;
+    if (type) where.alertType = type;
+    
+    // Get total count and paginated results
+    const [total, incidents] = await Promise.all([
+      prisma.alert.count({ where }),
+      prisma.alert.findMany({
+        where,
+        skip,
+        take: parseInt(limit),
+        orderBy: { createdAt: 'desc' },
+        include: {
+          documents: {
+            select: {
+              id: true,
+              title: true,
+              type: true,
+              createdAt: true
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 3
+          }
+        }
+      })
+    ]);
+    
+    return res.json({
+      success: true,
+      data: incidents,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / limit)
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error({ error }, 'Failed to fetch incidents from database');
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to fetch incidents',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
 });
 
-// Ingest incident
-router.post('/ingest', async (req, res) => {
-  // For Day1: persist to DB later — respond with mock id
-  const fakeId = Math.floor(Math.random()*100000);
-  logger.info({body:req.body}, 'ingest received');
-  return res.json({ incident_id: fakeId });
-});
-
-// Get incident by ID
+/**
+ * @route GET /api/incidents/:id
+ * @desc Get a single incident by ID from the database
+ * @access Public
+ */
 router.get('/:id', async (req, res) => {
   const { id } = req.params;
-  logger.info({incident_id: id}, 'fetching incident');
+  logger.info({ incidentId: id }, 'Fetching incident by ID from database');
   
-  // Mock response for Day 1
-  return res.json({
-    id: parseInt(id),
-    type: 'flood',
-    location: 'Riverdale District',
-    latitude: 12.34,
-    longitude: 56.78,
-    severity: 3,
-    status: 'active',
-    created_at: new Date().toISOString()
-  });
-});
-
-// Generate response plan for incident
-router.post('/:id/plan', async (req, res) => {
-  const { id } = req.params;
-  logger.info({incident_id: id}, 'generating response plan');
-  
-  // Mock response for Day 1
-  return res.json({
-    plan_id: `plan_${id}_${Date.now()}`,
-    incident_id: id,
-    status: 'generated',
-    steps: [
-      'Alert local emergency services',
-      'Notify disaster response teams',
-      'Begin evacuation of affected areas',
-      'Set up emergency shelters',
-      'Deploy medical assistance'
-    ],
-    created_at: new Date().toISOString()
-  });
+  try {
+    const incident = await prisma.alert.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        documents: {
+          select: {
+            id: true,
+            title: true,
+            content: true,
+            type: true,
+            summary: true,
+            createdAt: true
+          },
+          orderBy: { createdAt: 'desc' }
+        }
+      }
+    });
+    
+    if (!incident) {
+      return res.status(404).json({
+        success: false,
+        error: 'Incident not found'
+      });
+    }
+    
+    return res.json({
+      success: true,
+      data: incident
+    });
+  } catch (error) {
+    logger.error({ error, incidentId: id }, 'Failed to fetch incident from database');
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to fetch incident',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
 });
 
 module.exports = router;

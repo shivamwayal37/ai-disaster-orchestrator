@@ -1,31 +1,96 @@
-# AI Disaster Response Orchestrator
+# 🚨 AI Disaster Response Orchestrator
 
-Intelligent multi-step disaster response coordination system using TiDB Serverless with vector search and LLM orchestration.
+> **TiDB Hackathon 2025 Submission** - Intelligent multi-step disaster response coordination system powered by TiDB Serverless vector search and LLM orchestration.
 
-## Architecture
+[![Demo](https://img.shields.io/badge/🎥_Demo-Watch_Video-red?style=for-the-badge)](https://your-demo-link.com)
+[![Live Demo](https://img.shields.io/badge/🌐_Live_Demo-Try_Now-blue?style=for-the-badge)](https://your-deployment-url.com)
+[![Documentation](https://img.shields.io/badge/📚_Docs-Read_More-green?style=for-the-badge)](./docs/)
+
+## 🎯 **What This Does**
+
+**End-to-End Automated Disaster Response**: From alert ingestion to action plan execution in under 15 seconds.
+
+1. **🔍 Ingests** disaster alerts from multiple sources (weather APIs, social media, satellites)
+2. **🧠 Processes** with AI to extract entities and assess severity  
+3. **📊 Searches** similar historical incidents using TiDB vector + full-text search
+4. **🤖 Generates** structured response plans with LLM orchestration
+5. **🚀 Executes** actions: evacuation routes (Google Maps) + mass SMS (Twilio)
+
+## 🏗️ **System Architecture**
 
 ```mermaid
-flowchart LR
-    A[APIs: Weather/Twitter/NASA] --> B[Ingestion Worker]
-    B --> C[TiDB.live_incidents]
-    C --> D[Embedding Worker]
-    D --> E[TiDB: vector + full-text]
-    F[Incident Trigger] --> G[LLM Orchestrator]
-    G --> H[Vector + Full-text Retrieval]
-    H --> I[LLM Plan Generation]
-    I --> J[Route Planner Maps API]
-    J --> K[Twilio SMS Notifier]
-    E --> H
+flowchart TB
+    subgraph "Data Sources"
+        A1[🌤️ OpenWeather API]
+        A2[🐦 Twitter API]  
+        A3[🛰️ NASA FIRMS]
+        A4[📋 Emergency Protocols]
+    end
+    
+    subgraph "Ingestion Layer"
+        B[🔄 Multi-Source Ingestion Worker]
+    end
+    
+    subgraph "TiDB Serverless"
+        C1[📊 Alerts Table + Vector Index]
+        C2[📚 Documents + Full-Text Search]
+        C3[🏥 Resources + Geospatial Index]
+    end
+    
+    subgraph "AI Processing"
+        D1[🧠 Kimi AI - Entity Extraction]
+        D2[🔍 Hybrid Search Engine]
+        D3[🤖 OpenAI - Response Planning]
+    end
+    
+    subgraph "Action Layer"
+        E1[🗺️ Google Maps - Routing]
+        E2[📱 Twilio - Mass SMS]
+        E3[📡 Real-time Dashboard]
+    end
+    
+    A1 & A2 & A3 & A4 --> B
+    B --> C1 & C2 & C3
+    C1 & C2 & C3 --> D2
+    D1 --> C1
+    D2 --> D3
+    D3 --> E1 & E2 & E3
 ```
 
-## Tech Stack
+## 🚀 **Quick Start** (5 minutes to demo)
 
-- **Frontend**: Next.js + Tailwind CSS (Vercel)
-- **Backend**: Node.js + Express API Gateway
-- **Workers**: Python ingestion & embedding workers
-- **Database**: TiDB Serverless with vector + full-text search
-- **Actions**: Google Maps API + Twilio SMS
-- **Deployment**: Docker + GitHub Actions CI/CD
+### Option 1: One-Command Docker Setup
+```bash
+git clone https://github.com/your-username/ai-disaster-orchestrator.git
+cd ai-disaster-orchestrator
+cp .env.example .env
+# Edit .env with your API keys (see setup guide below)
+npm run demo:start
+```
+
+### Option 2: Development Setup
+```bash
+git clone https://github.com/your-username/ai-disaster-orchestrator.git
+cd ai-disaster-orchestrator
+npm install
+npm run setup:dev
+npm run dev
+```
+
+🌐 **Frontend**: http://localhost:3000  
+🔧 **Backend API**: http://localhost:3001  
+📊 **Health Check**: http://localhost:3001/api/health
+
+## 🛠️ **Tech Stack**
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Frontend** | Next.js 15 + Tailwind CSS | Real-time dashboard with SSE streaming |
+| **Backend** | Node.js + Express + Prisma | REST API with rate limiting & validation |
+| **Database** | **TiDB Serverless** | Vector search + full-text + geospatial |
+| **AI Services** | Kimi AI + OpenAI | Entity extraction + response planning |
+| **Actions** | Google Maps + Twilio | Route optimization + mass notifications |
+| **Deployment** | Docker + Vercel + Railway | Containerized multi-service deployment |
 
 ## Project Structure
 

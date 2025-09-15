@@ -1,0 +1,906 @@
+openapi: 3.0.3
+info:
+  title: AI Disaster Response Orchestrator API
+  description: |
+    Comprehensive REST API for disaster management, real-time alert processing, 
+    AI-powered response planning, and multi-modal search capabilities using TiDB Serverless vector search.
+  version: 1.0.0
+  contact:
+    name: AI Disaster Response Team
+    email: support@disaster-orchestrator.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3001/api
+    description: Development server
+  - url: https://api.disaster-orchestrator.com/api
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /alerts:
+    get:
+      summary: Get all alerts
+      description: Retrieve paginated list of disaster alerts with optional filtering
+      tags:
+        - Alerts
+      parameters:
+        - name: limit
+          in: query
+          description: Number of results per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          description: Pagination offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: severity
+          in: query
+          description: Filter by severity level
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 4
+        - name: type
+          in: query
+          description: Filter by alert type
+          schema:
+            type: string
+            enum: [wildfire, flood, earthquake, cyclone, heatwave, landslide, other]
+        - name: location
+          in: query
+          description: Filter by location
+          schema:
+            type: string
+        - name: active
+          in: query
+          description: Filter active/inactive alerts
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      summary: Create new alert
+      description: Create a new disaster alert
+      tags:
+        - Alerts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAlertRequest'
+      responses:
+        '201':
+          description: Alert created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateAlertResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /alerts/{id}:
+    get:
+      summary: Get alert by ID
+      description: Retrieve detailed information about a specific alert
+      tags:
+        - Alerts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Alert identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertDetailResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /alerts/{id}/status:
+    patch:
+      summary: Update alert status
+      description: Update the status of an existing alert
+      tags:
+        - Alerts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Alert identifier
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAlertStatusRequest'
+      responses:
+        '200':
+          description: Status updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /alerts/stream:
+    get:
+      summary: Real-time alert stream
+      description: Server-Sent Events stream for real-time alert updates
+      tags:
+        - Alerts
+      responses:
+        '200':
+          description: SSE stream established
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  event: alert
+                  data: {"id": "12347", "title": "New Emergency Alert", ...}
+                  
+                  event: update
+                  data: {"id": "12345", "status": "RESOLVED"}
+                  
+                  event: heartbeat
+                  data: {"timestamp": "2025-09-15T12:00:00Z"}
+
+  /orchestrate:
+    post:
+      summary: Generate AI response plan
+      description: Generate structured disaster response plan using AI orchestration
+      tags:
+        - AI Orchestration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestrationRequest'
+      responses:
+        '200':
+          description: Response plan generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestrationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /search/hybrid:
+    post:
+      summary: Hybrid search
+      description: Search using combined vector similarity and full-text relevance
+      tags:
+        - Search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HybridSearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /search/vector:
+    post:
+      summary: Vector similarity search
+      description: Search using semantic vector similarity
+      tags:
+        - Search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VectorSearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+
+  /search/fulltext:
+    post:
+      summary: Full-text search
+      description: Search using MySQL full-text search with relevance scoring
+      tags:
+        - Search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FullTextSearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+
+  /search/geospatial:
+    post:
+      summary: Geospatial search
+      description: Search for resources within geographic radius
+      tags:
+        - Search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeospatialSearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+
+  /incidents:
+    get:
+      summary: Get all incidents
+      description: Retrieve paginated list of historical incidents
+      tags:
+        - Incidents
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: severity
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 4
+        - name: location
+          in: query
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentListResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: API key authentication (Bearer token)
+
+  schemas:
+    Alert:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique alert identifier
+        title:
+          type: string
+          description: Alert headline
+        description:
+          type: string
+          description: Detailed alert description
+        alertType:
+          type: string
+          enum: [wildfire, flood, earthquake, cyclone, heatwave, landslide, other]
+          description: Type of disaster
+        severity:
+          type: integer
+          minimum: 1
+          maximum: 4
+          description: Severity level (1=Low, 2=Medium, 3=High, 4=Critical)
+        location:
+          type: string
+          description: Geographic location
+        latitude:
+          type: number
+          format: double
+          description: Latitude coordinate
+        longitude:
+          type: number
+          format: double
+          description: Longitude coordinate
+        isActive:
+          type: boolean
+          description: Whether alert is currently active
+        createdAt:
+          type: string
+          format: date-time
+          description: Alert creation timestamp
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last update timestamp
+        source:
+          type: string
+          enum: [weather_api, social_media, satellite, manual]
+          description: Source of the alert
+        embedding:
+          type: array
+          items:
+            type: number
+          description: 1536-dimensional vector embedding
+        rawData:
+          type: object
+          description: Additional metadata from source
+      required:
+        - id
+        - title
+        - description
+        - alertType
+        - severity
+        - location
+        - isActive
+        - createdAt
+        - source
+
+    CreateAlertRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 5
+          maxLength: 255
+        description:
+          type: string
+          minLength: 10
+          maxLength: 2000
+        alertType:
+          type: string
+          enum: [wildfire, flood, earthquake, cyclone, heatwave, landslide, other]
+        severity:
+          type: integer
+          minimum: 1
+          maximum: 4
+        location:
+          type: string
+          minLength: 2
+          maxLength: 255
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+        source:
+          type: string
+          enum: [weather_api, social_media, satellite, manual]
+        rawData:
+          type: object
+      required:
+        - title
+        - description
+        - alertType
+        - severity
+        - location
+        - source
+
+    UpdateAlertStatusRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [PENDING, PROCESSING, RESOLVED, FALSE_ALARM]
+        metadata:
+          type: object
+          properties:
+            resolvedBy:
+              type: string
+            resolution:
+              type: string
+      required:
+        - status
+
+    OrchestrationRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          minLength: 10
+          maxLength: 500
+          description: Description of the emergency situation
+        type:
+          type: string
+          enum: [wildfire, flood, earthquake, cyclone, heatwave, landslide, other]
+          description: Type of disaster
+        location:
+          type: string
+          minLength: 2
+          maxLength: 100
+          description: Geographic location
+        severity:
+          type: string
+          enum: [low, moderate, medium, high, severe, critical]
+          description: Severity level
+        metadata:
+          type: object
+          description: Additional context information
+      required:
+        - query
+        - type
+        - location
+
+    ActionPlan:
+      type: object
+      properties:
+        summary:
+          type: string
+          description: Brief situation summary
+        risk_level:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        time_sensitivity:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, IMMEDIATE]
+        estimated_impact:
+          type: string
+          description: Expected impact assessment
+        immediate_actions:
+          type: array
+          items:
+            type: object
+            properties:
+              action:
+                type: string
+              priority:
+                type: integer
+              timeline:
+                type: string
+        resource_requirements:
+          type: object
+          properties:
+            personnel:
+              type: array
+              items:
+                type: string
+            equipment:
+              type: array
+              items:
+                type: string
+            facilities:
+              type: array
+              items:
+                type: string
+        response_timeline:
+          type: object
+          properties:
+            immediate:
+              type: string
+            short_term:
+              type: string
+            medium_term:
+              type: string
+        coordination_requirements:
+          type: object
+          properties:
+            primary_agencies:
+              type: array
+              items:
+                type: string
+            communication_plan:
+              type: string
+            public_information:
+              type: string
+        estimated_cost:
+          type: string
+        generated_at:
+          type: string
+          format: date-time
+        request_id:
+          type: string
+        cached:
+          type: boolean
+
+    HybridSearchRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+        threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.7
+        filters:
+          type: object
+          properties:
+            category:
+              type: string
+            type:
+              type: string
+            location:
+              type: string
+        weights:
+          type: object
+          properties:
+            vector:
+              type: number
+              minimum: 0
+              maximum: 1
+              default: 0.4
+            text:
+              type: number
+              minimum: 0
+              maximum: 1
+              default: 0.6
+      required:
+        - query
+
+    VectorSearchRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+        threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.8
+        filters:
+          type: object
+      required:
+        - query
+
+    FullTextSearchRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+        filters:
+          type: object
+      required:
+        - query
+
+    GeospatialSearchRequest:
+      type: object
+      properties:
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+        radius:
+          type: number
+          minimum: 0.1
+          maximum: 1000
+          description: Search radius in kilometers
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+        filters:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [shelter, hospital, emergency_center, fire_station, police_station]
+      required:
+        - latitude
+        - longitude
+        - radius
+
+    SearchResult:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+        category:
+          type: string
+        similarity:
+          type: number
+          description: Vector similarity score
+        text_score:
+          type: number
+          description: Full-text relevance score
+        combined_score:
+          type: number
+          description: Weighted combined score
+        metadata:
+          type: object
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+          description: Total number of results
+        page:
+          type: integer
+          description: Current page number
+        limit:
+          type: integer
+          description: Results per page
+        totalPages:
+          type: integer
+          description: Total number of pages
+
+    AlertListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alert'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    AlertDetailResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/Alert'
+
+    CreateAlertResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+            message:
+              type: string
+
+    OrchestrationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        action_plan:
+          $ref: '#/components/schemas/ActionPlan'
+
+    SearchResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+        query_info:
+          type: object
+          properties:
+            processed_query:
+              type: string
+            embedding_generated:
+              type: boolean
+            search_type:
+              type: string
+            total_results:
+              type: integer
+
+    IncidentListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alert'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Error message
+        code:
+          type: string
+          description: Error code
+        details:
+          type: object
+          description: Additional error details
+        timestamp:
+          type: string
+          format: date-time
+
+  responses:
+    BadRequest:
+      description: Bad request - validation errors
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Validation failed"
+            code: "VALIDATION_ERROR"
+            details:
+              query: "Query must be between 10 and 500 characters"
+            timestamp: "2025-09-15T12:00:00Z"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Alert not found"
+            code: "NOT_FOUND"
+            timestamp: "2025-09-15T12:00:00Z"
+
+    RateLimitExceeded:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Too many requests"
+            code: "RATE_LIMIT_EXCEEDED"
+            timestamp: "2025-09-15T12:00:00Z"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Internal server error"
+            code: "INTERNAL_ERROR"
+            timestamp: "2025-09-15T12:00:00Z"
+
+tags:
+  - name: Alerts
+    description: Disaster alert management and real-time streaming
+  - name: AI Orchestration
+    description: AI-powered response plan generation
+  - name: Search
+    description: Multi-modal search capabilities (vector, full-text, geospatial)
+  - name: Incidents
+    description: Historical incident management

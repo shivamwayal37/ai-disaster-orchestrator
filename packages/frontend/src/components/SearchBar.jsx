@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { Search, X, Loader2 } from 'lucide-react'
 
@@ -19,31 +19,74 @@ export default function SearchBar({ onSearchResults, onSearchError, onSearchLoad
     }
   }, [searchParams])
 
-  // Perform actual search when query changes
+  // Track last search time to implement throttling
+  const lastSearchTime = useRef(0);
+  const lastQuery = useRef('');
+  
+  // Perform search using the unified search endpoint
   useEffect(() => {
     const performSearch = async (query) => {
-      if (!query.trim()) {
-        onSearchResults?.(null)
-        return
+      const trimmedQuery = query.trim();
+      
+      // Skip if query is empty or too short (minimum 3 characters)
+      if (!trimmedQuery || trimmedQuery.length < 3) {
+        if (trimmedQuery.length === 0) {
+          onSearchResults?.(null);
+        }
+        return;
       }
 
-      setIsSearching(true)
-      onSearchLoading?.(true)
+      // Skip if this is the same as the last query
+      if (trimmedQuery === lastQuery.current) {
+        return;
+      }
+      
+      // Implement throttling - minimum 1 second between requests
+      const now = Date.now();
+      if (now - lastSearchTime.current < 1000) {
+        console.log('Skipping search - too soon after last request');
+        return;
+      }
+      
+      lastSearchTime.current = now;
+      lastQuery.current = trimmedQuery;
+      
+      setIsSearching(true);
+      onSearchLoading?.(true);
       
       try {
-        const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/search?q=${encodeURIComponent(query)}`)
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/search?q=${encodeURIComponent(trimmedQuery)}`
+        )
         
         if (!response.ok) {
           throw new Error(`Search failed: ${response.status}`)
         }
         
         const data = await response.json()
-        onSearchResults?.(data)
-        onSearchError?.(null)
+        
+        if (onSearchResults) {
+          onSearchResults({
+            query,
+            results: data.results || [],
+            total: data.total || 0,
+            type: data.type || 'search',
+            timestamp: new Date().toISOString()
+          });
+        }
+        if (onSearchError) onSearchError(null);
       } catch (error) {
         console.error('Search error:', error)
-        onSearchError?.(error.message)
-        onSearchResults?.(null)
+        if (onSearchError) onSearchError(error.message);
+        if (onSearchResults) {
+          onSearchResults({
+            query,
+            results: [],
+            total: 0,
+            error: error.message,
+            timestamp: new Date().toISOString()
+          });
+        }
       } finally {
         setIsSearching(false)
         onSearchLoading?.(false)
@@ -51,22 +94,47 @@ export default function SearchBar({ onSearchResults, onSearchError, onSearchLoad
     }
 
     const delayedSearch = setTimeout(() => {
-      const params = new URLSearchParams(searchParams)
+      const trimmedTerm = searchTerm.trim();
+      const params = new URLSearchParams(searchParams);
       
-      if (searchTerm.trim()) {
-        params.set('q', searchTerm.trim())
-        performSearch(searchTerm.trim())
+      if (trimmedTerm) {
+        // Only update URL and perform search if query meets minimum length
+        if (trimmedTerm.length >= 3) {
+          params.set('q', trimmedTerm);
+          performSearch(trimmedTerm);
+        } else {
+          // If query is too short, clear results but keep the search term
+          onSearchResults?.({
+            query: trimmedTerm,
+            results: [],
+            total: 0,
+            type: 'search',
+            timestamp: new Date().toISOString()
+          });
+        }
       } else {
-        params.delete('q')
-        onSearchResults?.(null)
+        params.delete('q');
+        onSearchResults?.(null);
       }
       
       const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`
       router.replace(newUrl)
     }, 300)
 
-    return () => clearTimeout(delayedSearch)
-  }, [searchTerm, searchParams, router, onSearchResults, onSearchError, onSearchLoading])
+    return () => clearTimeout(delayedSearch);
+  }, [searchTerm, searchParams, router, onSearchResults, onSearchError, onSearchLoading]);
+  
+  // Add a manual search button handler
+  const handleSearchSubmit = (e) => {
+    e?.preventDefault();
+    const trimmedTerm = searchTerm.trim();
+    if (trimmedTerm && trimmedTerm.length >= 3) {
+      const params = new URLSearchParams(searchParams);
+      params.set('q', trimmedTerm);
+      router.replace(`${window.location.pathname}?${params.toString()}`);
+      performSearch(trimmedTerm);
+    }
+  };
 
   const clearSearch = () => {
     setSearchTerm('')

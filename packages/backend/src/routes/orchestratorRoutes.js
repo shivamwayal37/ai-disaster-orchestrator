@@ -9,6 +9,7 @@ const { body, query, validationResult } = require('express-validator');
 const { responseOrchestrator } = require('../services/responseOrchestratorService');
 const pino = require('pino');
 const dotenv = require('dotenv');
+const { cacheService } = require('../services/cacheService');
 const router = express.Router();
 const logger = pino({ name: 'orchestrator-api' });
 
@@ -43,8 +44,9 @@ const validateOrchestrationRequest = [
   
   body('severity')
     .optional()
-    .isIn(['low', 'moderate', 'high', 'severe', 'critical'])
-    .withMessage('Severity must be: low, moderate, high, severe, or critical'),
+    .isIn(['low', 'moderate', 'medium', 'high', 'severe', 'critical'])
+    .customSanitizer(value => value === 'medium' ? 'moderate' : value)
+    .withMessage('Severity must be: low, moderate/medium, high, severe, or critical'),
   
   body('metadata')
     .optional()
@@ -63,9 +65,22 @@ router.post('/',
     const startTime = Date.now();
     
     try {
+      // Log the full request body for debugging
+      logger.info({
+        requestBody: req.body,
+        path: req.path,
+        method: req.method,
+        ip: req.ip
+      }, 'Orchestration request received');
+      
       // Check for validation errors
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
+        logger.warn({
+          validationErrors: errors.array(),
+          requestBody: req.body
+        }, 'Validation failed');
+        
         return res.status(400).json({
           success: false,
           error: 'Validation failed',
@@ -79,24 +94,31 @@ router.post('/',
         query: query.substring(0, 100),
         type,
         location,
-        severity
-      }, 'Orchestration request received');
+        severity,
+        alertId: metadata?.alertId
+      }, 'Processing orchestration request');
 
-      // Generate action plan
+      // Generate action plan using the pre-configured orchestrator
       const actionPlan = await responseOrchestrator.generateActionPlan({
         query,
         type,
         location,
         severity,
-        metadata
+        metadata: metadata || {}
       });
 
       const responseTime = Date.now() - startTime;
       
+      // Structure the response to match frontend expectations
       res.json({
         success: true,
         request_id: actionPlan.metadata?.requestId || `req_${Date.now()}`,
-        action_plan: actionPlan,
+        action_plan: {
+          action_plan: actionPlan, // Nested structure expected by frontend
+          response_time_ms: responseTime,
+          cached: actionPlan.metadata?.cached || false,
+          risk_level: actionPlan.situation_assessment?.risk_level || 'UNKNOWN'
+        },
         response_time_ms: responseTime
       });
 
@@ -425,8 +447,8 @@ router.get('/stats', async (req, res) => {
       service_status: 'operational',
       uptime: process.uptime(),
       memory_usage: process.memoryUsage(),
-      ai_provider: responseOrchestrator.aiProvider,
-      cache_enabled: responseOrchestrator.cacheEnabled,
+      ai_provider: aiClient.aiProvider,
+      cache_enabled: cacheService.cacheEnabled,
       supported_disaster_types: ['wildfire', 'flood', 'earthquake', 'cyclone', 'heatwave', 'landslide', 'other'],
       rate_limits: {
         requests_per_window: 20,

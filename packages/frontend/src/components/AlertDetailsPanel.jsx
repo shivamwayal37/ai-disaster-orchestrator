@@ -17,6 +17,45 @@ import { getSeverityLabel, getSeverityClasses, severityMap } from '@/utils/sever
 import ActionPlanDisplay from './ActionPlanDisplay'
 import TimestampDisplay from './TimestampDisplay'
 
+// Map disaster types to valid API values
+const mapDisasterType = (type) => {
+  const typeStr = String(type || '').toLowerCase()
+  const typeMap = {
+    'fire': 'wildfire',
+    'wildfire': 'wildfire',
+    'flooding': 'flood',
+    'flood': 'flood',
+    'earthquake': 'earthquake',
+    'storm': 'cyclone',
+    'tornado': 'cyclone',
+    'cyclone': 'cyclone',
+    'heat': 'heatwave',
+    'heatwave': 'heatwave',
+    'landslide': 'landslide',
+    'power': 'other',
+    'electrical': 'other'
+  }
+  return typeMap[typeStr] || 'other'
+}
+
+// Map severity levels to valid API values
+const mapSeverity = (severity) => {
+  const severityStr = String(severity || '').toLowerCase()
+  const severityMap = {
+    '1': 'low',
+    '2': 'moderate', 
+    '3': 'high',
+    '4': 'critical',
+    'low': 'low',
+    'medium': 'moderate',
+    'moderate': 'moderate',
+    'high': 'high',
+    'severe': 'severe',
+    'critical': 'critical'
+  }
+  return severityMap[severityStr] || 'moderate'
+}
+
 export default function AlertDetailsPanel({ selectedAlert, isLoading }) {
   const [actionPlan, setActionPlan] = useState(null)
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false)
@@ -29,18 +68,33 @@ export default function AlertDetailsPanel({ selectedAlert, isLoading }) {
     setPlanError(null)
     
     try {
+      // Build a comprehensive query with fallbacks
+      const query = [
+        selectedAlert.description,
+        selectedAlert.title,
+        `A ${selectedAlert.type || 'disaster'} situation`,
+        `Location: ${selectedAlert.location || 'unknown location'}`,
+        `Severity: ${selectedAlert.severity || 'unknown'}`
+      ].filter(Boolean).join('. ')
+
+      if (!query.trim()) {
+        throw new Error('Insufficient alert data to generate a response plan')
+      }
+
       const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/orchestrate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          query: selectedAlert.description || selectedAlert.title || 'Emergency situation',
-          context: {
-            location: selectedAlert.location,
-            severity: selectedAlert.severity,
-            type: selectedAlert.type || selectedAlert.disaster_type,
-            timestamp: selectedAlert.timestamp || selectedAlert.created_at
+          query,
+          type: mapDisasterType(selectedAlert.type || selectedAlert.disaster_type || 'other'),
+          location: selectedAlert.location || 'Unknown location',
+          severity: mapSeverity(selectedAlert.severity || 'medium'),
+          metadata: {
+            timestamp: selectedAlert.timestamp || selectedAlert.created_at || new Date().toISOString(),
+            alertId: selectedAlert.id,
+            source: 'frontend_alert_panel'
           }
         })
       })

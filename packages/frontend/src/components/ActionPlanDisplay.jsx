@@ -107,9 +107,39 @@ export default function ActionPlanDisplay({ actionPlan }) {
         />
         {expandedSections.situation && (
           <div className="bg-white/5 border border-white/10 rounded-xl p-4 ml-4">
-            <p className="text-gray-300 leading-relaxed">
-              {plan.situation_assessment || 'No situation assessment available.'}
-            </p>
+            {typeof plan.situation_assessment === 'object' && plan.situation_assessment ? (
+              <div className="space-y-3">
+                {plan.situation_assessment.summary && (
+                  <div>
+                    <h5 className="text-white font-medium mb-1">Summary</h5>
+                    <p className="text-gray-300 leading-relaxed">{plan.situation_assessment.summary}</p>
+                  </div>
+                )}
+                {plan.situation_assessment.estimated_impact && (
+                  <div>
+                    <h5 className="text-white font-medium mb-1">Estimated Impact</h5>
+                    <p className="text-gray-300 leading-relaxed">{plan.situation_assessment.estimated_impact}</p>
+                  </div>
+                )}
+                {plan.situation_assessment.time_sensitivity && (
+                  <div>
+                    <h5 className="text-white font-medium mb-1">Time Sensitivity</h5>
+                    <span className={`inline-block px-2 py-1 rounded-full text-xs font-semibold ${
+                      plan.situation_assessment.time_sensitivity === 'IMMEDIATE' ? 'bg-disaster-red text-white' :
+                      plan.situation_assessment.time_sensitivity === 'URGENT' ? 'bg-disaster-orange text-white' :
+                      plan.situation_assessment.time_sensitivity === 'MODERATE' ? 'bg-disaster-yellow text-black' :
+                      'bg-disaster-blue text-white'
+                    }`}>
+                      {plan.situation_assessment.time_sensitivity}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-gray-300 leading-relaxed">
+                {typeof plan.situation_assessment === 'string' ? plan.situation_assessment : 'No situation assessment available.'}
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -168,7 +198,67 @@ export default function ActionPlanDisplay({ actionPlan }) {
         />
         {expandedSections.resources && (
           <div className="space-y-3 ml-4">
-            {plan.resource_requirements?.length > 0 ? (
+            {plan.resource_requirements && typeof plan.resource_requirements === 'object' ? (
+              <div className="space-y-4">
+                {plan.resource_requirements.personnel && (
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <h5 className="text-white font-medium mb-2 flex items-center">
+                      <Users className="w-4 h-4 mr-2 text-disaster-blue" />
+                      Personnel
+                    </h5>
+                    <div className="grid md:grid-cols-2 gap-2">
+                      {Array.isArray(plan.resource_requirements.personnel) ? 
+                        plan.resource_requirements.personnel.map((person, index) => (
+                          <span key={index} className="text-gray-300 text-sm">• {person}</span>
+                        )) : 
+                        <span className="text-gray-300 text-sm">{plan.resource_requirements.personnel}</span>
+                      }
+                    </div>
+                  </div>
+                )}
+                
+                {plan.resource_requirements.equipment && (
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <h5 className="text-white font-medium mb-2 flex items-center">
+                      <Truck className="w-4 h-4 mr-2 text-disaster-blue" />
+                      Equipment
+                    </h5>
+                    <div className="grid md:grid-cols-2 gap-2">
+                      {Array.isArray(plan.resource_requirements.equipment) ? 
+                        plan.resource_requirements.equipment.map((item, index) => (
+                          <span key={index} className="text-gray-300 text-sm">• {item}</span>
+                        )) : 
+                        <span className="text-gray-300 text-sm">{plan.resource_requirements.equipment}</span>
+                      }
+                    </div>
+                  </div>
+                )}
+
+                {plan.resource_requirements.facilities && (
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <h5 className="text-white font-medium mb-2 flex items-center">
+                      <Target className="w-4 h-4 mr-2 text-disaster-blue" />
+                      Facilities
+                    </h5>
+                    <div className="grid md:grid-cols-2 gap-2">
+                      {Array.isArray(plan.resource_requirements.facilities) ? 
+                        plan.resource_requirements.facilities.map((facility, index) => (
+                          <span key={index} className="text-gray-300 text-sm">• {facility}</span>
+                        )) : 
+                        <span className="text-gray-300 text-sm">{plan.resource_requirements.facilities}</span>
+                      }
+                    </div>
+                  </div>
+                )}
+
+                {plan.resource_requirements.estimated_cost && (
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                    <h5 className="text-white font-medium mb-1">Estimated Cost</h5>
+                    <p className="text-gray-300 text-sm">{plan.resource_requirements.estimated_cost}</p>
+                  </div>
+                )}
+              </div>
+            ) : Array.isArray(plan.resource_requirements) && plan.resource_requirements.length > 0 ? (
               <div className="grid md:grid-cols-2 gap-3">
                 {plan.resource_requirements.map((resource, index) => (
                   <div key={index} className="bg-white/5 border border-white/10 rounded-xl p-4">
@@ -212,14 +302,69 @@ export default function ActionPlanDisplay({ actionPlan }) {
           />
           {expandedSections.timeline && (
             <div className="bg-white/5 border border-white/10 rounded-xl p-4 ml-4">
-              <p className="text-gray-300">{plan.timeline}</p>
+              {typeof plan.timeline === 'object' && plan.timeline ? (
+                <div className="space-y-4">
+                  {plan.timeline.immediate && (
+                    <div>
+                      <h5 className="text-white font-medium mb-2 flex items-center">
+                        <span className="w-2 h-2 bg-disaster-red rounded-full mr-2"></span>
+                        Immediate (0-1 hour)
+                      </h5>
+                      <div className="ml-4 space-y-1">
+                        {Array.isArray(plan.timeline.immediate) ? 
+                          plan.timeline.immediate.map((action, index) => (
+                            <p key={index} className="text-gray-300 text-sm">• {action}</p>
+                          )) : 
+                          <p className="text-gray-300 text-sm">{plan.timeline.immediate}</p>
+                        }
+                      </div>
+                    </div>
+                  )}
+                  
+                  {plan.timeline.short_term && (
+                    <div>
+                      <h5 className="text-white font-medium mb-2 flex items-center">
+                        <span className="w-2 h-2 bg-disaster-orange rounded-full mr-2"></span>
+                        Short Term (1-6 hours)
+                      </h5>
+                      <div className="ml-4 space-y-1">
+                        {Array.isArray(plan.timeline.short_term) ? 
+                          plan.timeline.short_term.map((action, index) => (
+                            <p key={index} className="text-gray-300 text-sm">• {action}</p>
+                          )) : 
+                          <p className="text-gray-300 text-sm">{plan.timeline.short_term}</p>
+                        }
+                      </div>
+                    </div>
+                  )}
+                  
+                  {plan.timeline.medium_term && (
+                    <div>
+                      <h5 className="text-white font-medium mb-2 flex items-center">
+                        <span className="w-2 h-2 bg-disaster-yellow rounded-full mr-2"></span>
+                        Medium Term (6-24 hours)
+                      </h5>
+                      <div className="ml-4 space-y-1">
+                        {Array.isArray(plan.timeline.medium_term) ? 
+                          plan.timeline.medium_term.map((action, index) => (
+                            <p key={index} className="text-gray-300 text-sm">• {action}</p>
+                          )) : 
+                          <p className="text-gray-300 text-sm">{plan.timeline.medium_term}</p>
+                        }
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-gray-300">{typeof plan.timeline === 'string' ? plan.timeline : 'No timeline available.'}</p>
+              )}
             </div>
           )}
         </div>
       )}
 
       {/* Coordination Requirements */}
-      {plan.coordination_requirements && (
+      {(plan.coordination_requirements || plan.coordination) && (
         <div className="space-y-2">
           <SectionHeader 
             title="Coordination Requirements" 
@@ -228,7 +373,39 @@ export default function ActionPlanDisplay({ actionPlan }) {
           />
           {expandedSections.coordination && (
             <div className="bg-white/5 border border-white/10 rounded-xl p-4 ml-4">
-              <p className="text-gray-300">{plan.coordination_requirements}</p>
+              {typeof (plan.coordination || plan.coordination_requirements) === 'object' && (plan.coordination || plan.coordination_requirements) ? (
+                <div className="space-y-4">
+                  {(plan.coordination?.primary_agencies || plan.coordination_requirements?.primary_agencies) && (
+                    <div>
+                      <h5 className="text-white font-medium mb-2">Primary Agencies</h5>
+                      <div className="grid md:grid-cols-2 gap-2">
+                        {Array.isArray(plan.coordination?.primary_agencies || plan.coordination_requirements?.primary_agencies) ? 
+                          (plan.coordination?.primary_agencies || plan.coordination_requirements?.primary_agencies).map((agency, index) => (
+                            <span key={index} className="text-gray-300 text-sm">• {agency}</span>
+                          )) : 
+                          <span className="text-gray-300 text-sm">{plan.coordination?.primary_agencies || plan.coordination_requirements?.primary_agencies}</span>
+                        }
+                      </div>
+                    </div>
+                  )}
+                  
+                  {(plan.coordination?.communication_plan || plan.coordination_requirements?.communication_plan) && (
+                    <div>
+                      <h5 className="text-white font-medium mb-2">Communication Plan</h5>
+                      <p className="text-gray-300 text-sm">{plan.coordination?.communication_plan || plan.coordination_requirements?.communication_plan}</p>
+                    </div>
+                  )}
+                  
+                  {(plan.coordination?.public_information || plan.coordination_requirements?.public_information) && (
+                    <div>
+                      <h5 className="text-white font-medium mb-2">Public Information</h5>
+                      <p className="text-gray-300 text-sm">{plan.coordination?.public_information || plan.coordination_requirements?.public_information}</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-gray-300">{typeof (plan.coordination_requirements || plan.coordination) === 'string' ? (plan.coordination_requirements || plan.coordination) : 'No coordination requirements available.'}</p>
+              )}
             </div>
           )}
         </div>

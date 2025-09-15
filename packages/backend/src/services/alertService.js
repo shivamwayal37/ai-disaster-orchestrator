@@ -82,12 +82,12 @@ class AlertService {
     
     try {
       // Generate a unique ID if not provided
-      const alertId = alertData.id || `alert_${uuidv4()}`;
+      const alertUid = alertData.id || uuidv4();
       
       // Create alert in database
       const alert = await prisma.alert.create({
         data: {
-          alert_uid: alertId,
+          alert_uid: alertUid,
           source,
           alertType: type,
           severity,
@@ -188,11 +188,106 @@ class AlertService {
    */
   async searchAlerts(query, options = {}) {
     try {
-      // Delegate to the search service
-      const results = await searchSimilarIncidents(query, options);
-      return results;
+      const { limit = 20, offset = 0, filters = {}, sortBy = 'createdAt', sortOrder = 'desc' } = options;
+      
+      // If no query is provided, fall back to a basic database query
+      if (!query || query.trim() === '') {
+        const where = {
+          ...(filters.alertType && { alertType: filters.alertType }),
+          ...(filters.severity && { severity: parseInt(filters.severity) }),
+          ...(filters.source && { source: filters.source }),
+          ...(filters.isActive !== undefined && { isActive: filters.isActive }),
+          ...(filters.startDate && { createdAt: { gte: new Date(filters.startDate) } }),
+          ...(filters.endDate && { 
+            ...(filters.startDate ? { createdAt: { gte: new Date(filters.startDate), lte: new Date(filters.endDate) } } : 
+                                 { createdAt: { lte: new Date(filters.endDate) } }) 
+          })
+        };
+
+        const [alerts, total] = await Promise.all([
+          prisma.alert.findMany({
+            where,
+            take: parseInt(limit),
+            skip: parseInt(offset),
+            orderBy: { [sortBy]: sortOrder.toLowerCase() },
+            include: {
+              documents: {
+                take: 5,
+                orderBy: { createdAt: 'desc' },
+                select: {
+                  id: true,
+                  title: true,
+                  content: true,
+                  summary: true,
+                  type: true,
+                  createdAt: true
+                }
+              }
+            }
+          }),
+          prisma.alert.count({ where })
+        ]);
+
+        // Format results to match frontend expectations
+        const formattedResults = alerts.map(alert => ({
+          id: alert.id,
+          title: alert.title,
+          description: alert.description,
+          content: alert.description,
+          category: alert.alertType,
+          type: alert.alertType,
+          disaster_type: alert.alertType,
+          summary: alert.rawData?.summary,
+          location: alert.location,
+          severity: alert.severity,
+          createdAt: alert.createdAt,
+          timestamp: alert.createdAt,
+          created_at: alert.createdAt,
+          similarity: 1.0,
+          distance: 0,
+          score: 1.0,
+          documents: alert.documents,
+          // Additional fields for frontend compatibility
+          affected_population: alert.rawData?.affected_population,
+          risk_level: alert.rawData?.risk_level,
+          metadata: alert.rawData || {},
+          status: alert.rawData?.status || (alert.isActive ? 'ACTIVE' : 'INACTIVE')
+        }));
+
+        return {
+          results: formattedResults,
+          pagination: {
+            total,
+            page: Math.floor(offset / limit) + 1,
+            limit: parseInt(limit),
+            totalPages: Math.ceil(total / limit)
+          }
+        };
+      }
+
+      // If there's a search query, use the search service
+      const results = await searchSimilarIncidents(query, {
+        ...options,
+        filters: {
+          ...filters,
+          status: 'ACTIVE'
+        }
+      });
+
+      // Format results to include pagination
+      const paginatedResults = results.slice(offset, offset + limit);
+      
+      return {
+        results: paginatedResults,
+        pagination: {
+          total: results.length,
+          page: Math.floor(offset / limit) + 1,
+          limit: parseInt(limit),
+          totalPages: Math.ceil(results.length / limit)
+        }
+      };
     } catch (error) {
-      this.logger.error({ error, query }, 'Search failed');
+      this.logger.error({ error, query, options }, 'Search failed');
       throw new Error(`Search failed: ${error.message}`);
     }
   }
@@ -336,22 +431,27 @@ class AlertService {
       // Convert to BigInt safely
       let id;
       try {
-        id = typeof alertId === 'bigint' ? alertId : BigInt(alertId);
+        const parsedNumber = Number(alertId);
+        if (isNaN(parsedNumber)) {
+          throw new Error('Not a number');
+        }
+        id = BigInt(parsedNumber);
       } catch (error) {
-        throw new Error(`Invalid alert ID format: ${alertId}`);
+        throw new Error(`Invalid alert ID format: ${alertId}. Must be a valid number.`);
       }
       
       const alert = await prisma.alert.findUnique({
         where: { id: id },
         include: {
-          // Removed relatedAlerts as it's not in the schema
           documents: {
             take: 5,
             orderBy: { createdAt: 'desc' },
             select: {
               id: true,
               title: true,
-              description: true,
+              content: true,
+              summary: true,
+              type: true,
               createdAt: true
             }
           }
@@ -362,10 +462,18 @@ class AlertService {
         throw new Error('Alert not found');
       }
 
-      // Map alertType to type for backward compatibility
+      // Map fields to expected frontend format
       return {
         ...alert,
-        type: alert.alertType
+        // Map alertType to type for backward compatibility
+        type: alert.alertType,
+        // Map rawData to metadata for backward compatibility
+        metadata: alert.rawData || {},
+        // Map isActive to status for backward compatibility
+        status: alert.rawData?.status || (alert.isActive ? 'ACTIVE' : 'INACTIVE'),
+        // Ensure timestamp fields are available for frontend
+        timestamp: alert.createdAt,
+        created_at: alert.createdAt
       };
       
     } catch (error) {

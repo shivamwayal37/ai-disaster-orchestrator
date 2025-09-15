@@ -1,5 +1,23 @@
 'use client'
 
+/**
+ * Main Dashboard Layout Component
+ * 
+ * This component serves as the primary interface for the AI Disaster Response Orchestrator.
+ * It manages real-time alert streaming, search functionality, and alert details display.
+ * 
+ * Key Features:
+ * - Real-time alert streaming via Server-Sent Events (SSE)
+ * - Hybrid search with vector similarity and full-text search
+ * - Alert filtering and selection
+ * - AI-powered response plan generation
+ * - Connection status monitoring
+ * 
+ * @param {Object} props - Component props
+ * @param {Array} props.initialAlerts - Initial alerts data from server
+ * @param {Object} props.searchParams - URL search parameters for filtering
+ */
+
 import { useState, useEffect } from 'react'
 import { AlertTriangle, Shield, Zap } from 'lucide-react'
 import SearchBar from './SearchBar'
@@ -7,18 +25,25 @@ import AlertsList from './AlertsList'
 import AlertDetailsPanel from './AlertDetailsPanel'
 
 export default function DashboardLayout({ initialAlerts, searchParams }) {
-  const [alerts, setAlerts] = useState(initialAlerts || [])
-  const [filteredAlerts, setFilteredAlerts] = useState(initialAlerts || [])
-  const [selectedAlert, setSelectedAlert] = useState(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [connectionStatus, setConnectionStatus] = useState('connecting')
-  const [searchResults, setSearchResults] = useState(null)
-  const [searchError, setSearchError] = useState(null)
-  const [isSearching, setIsSearching] = useState(false)
+  // State management for alerts and UI
+  const [alerts, setAlerts] = useState(initialAlerts || [])                    // All alerts from real-time stream
+  const [filteredAlerts, setFilteredAlerts] = useState(initialAlerts || [])    // Filtered alerts for display
+  const [selectedAlert, setSelectedAlert] = useState(null)                     // Currently selected alert for details
+  const [isLoading, setIsLoading] = useState(false)                           // Loading state for alert details
+  const [connectionStatus, setConnectionStatus] = useState('connecting')       // SSE connection status
+  const [searchResults, setSearchResults] = useState(null)                    // Search results from hybrid search
+  const [searchError, setSearchError] = useState(null)                       // Search error messages
+  const [isSearching, setIsSearching] = useState(false)                      // Search loading state
 
-  // Server-Sent Events for real-time alerts
+  /**
+   * Real-time Alert Streaming Setup
+   * 
+   * Establishes Server-Sent Events (SSE) connection to backend for live alert updates.
+   * Handles connection management, reconnection logic, and alert deduplication.
+   */
   useEffect(() => {
     const connectToAlertStream = () => {
+      // Create SSE connection to backend alert stream endpoint
       const eventSource = new EventSource(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/alerts/stream`)
       
       eventSource.onopen = () => {
@@ -108,7 +133,9 @@ export default function DashboardLayout({ initialAlerts, searchParams }) {
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/alerts/${alert.id}`)
       if (res.ok) {
-        const detailedAlert = await res.json()
+        const response = await res.json()
+        // Extract the alert data from the API response structure
+        const detailedAlert = response.data || response
         setSelectedAlert(detailedAlert)
       } else {
         setSelectedAlert(alert) // Fallback to basic data
