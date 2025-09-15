@@ -1,0 +1,53 @@
+services:
+  - type: web
+    name: ai-disaster-orchestrator-backend
+    env: node
+    region: oregon
+    plan: starter
+    buildCommand: cd packages/backend && npm install && npx prisma generate
+    startCommand: cd packages/backend && npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: TIDB_HOST
+        sync: false
+      - key: TIDB_PORT
+        sync: false
+      - key: TIDB_USER
+        sync: false
+      - key: TIDB_PASSWORD
+        sync: false
+      - key: TIDB_DATABASE
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: KIMI_API_KEY
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: NASA_API_KEY
+        sync: false
+      - key: TWITTER_BEARER_TOKEN
+        sync: false
+    autoDeploy: true
+    rootDir: .
+    
+  - type: redis
+    name: ai-disaster-orchestrator-redis
+    plan: starter
+    region: oregon

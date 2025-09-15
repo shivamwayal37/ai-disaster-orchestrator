@@ -7,11 +7,6 @@
     "packages/backend"
   ],
   "scripts": {
-    "demo:start": "docker-compose up -d && npm run setup:demo && npm run dev",
-    "demo:stop": "docker-compose down",
-    "demo:seed": "npm run db:seed && npm run ingestion:demo",
-    "setup:dev": "npm install && npm run db:setup && npm run demo:seed",
-    "setup:demo": "npm run db:setup && npm run demo:seed",
     "dev": "concurrently \"npm:dev:*\"",
     "dev:frontend": "npm --workspace packages/frontend run dev",
     "dev:backend": "npm --workspace packages/backend run dev",
