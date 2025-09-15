@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
+    "build": "echo 'No build step required'",
     "test": "jest --detectOpenHandles --forceExit",
     "test:integration": "jest --detectOpenHandles --forceExit tests/integration",
     "test:embeddings": "node scripts/test-kimi-embedding.js",
